@@ -1,0 +1,48 @@
+# Core Dependencies
+torch==2.2.2
+torchvision==0.17.2
+torchaudio==2.2.2
+--extra-index-url https://download.pytorch.org/whl/cu118
+
+# FastAPI & Web
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+aiofiles==24.1.0
+websockets==14.1
+
+# Pydantic (compatible versions)
+pydantic==2.10.5
+pydantic-settings==2.7.1
+
+# Computer Vision
+opencv-python==4.10.0.84
+opencv-contrib-python==4.10.0.84
+Pillow==11.3.0
+
+# Scientific Computing (compatible with PyTorch)
+numpy==1.26.4
+scipy==1.13.1
+
+# Data Processing
+pandas==2.2.3
+tqdm==4.67.1
+
+# Visualization
+matplotlib==3.9.4
+seaborn==0.13.2
+
+# Image Processing
+scikit-image==0.24.0
+
+# Utilities
+python-dotenv==1.0.1
+PyYAML==6.0.2
+
+# Optional: TensorFlow (compatible version)
+# tensorflow==2.15.0
+# keras==2.15.0
+
+# Development Tools (optional)
+# jupyter==1.1.1
+# notebook==7.3.2

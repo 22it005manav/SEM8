@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  # Unified service with GPU support
+  app-gpu:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.gpu
+    container_name: dehazing-unified-gpu
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/uploads:/app/uploads
+      - ./backend/outputs:/app/outputs
+      - ../models/pretrained:/app/models/pretrained:ro
+    environment:
+      - DEVICE=cuda
+      - ENABLE_FP16=True
+      - DEBUG=False
+      - UPLOAD_DIR=/app/uploads
+      - OUTPUT_DIR=/app/outputs
+      - MODEL_DIR=/app/models/pretrained
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [ gpu ]
+    restart: unless-stopped
+    networks:
+      - dehazing-network
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/api/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    driver: bridge
+
+volumes:
+  uploads:
+  outputs:

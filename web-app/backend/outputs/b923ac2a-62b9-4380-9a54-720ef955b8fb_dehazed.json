@@ -1,0 +1,14 @@
+{
+  "input_video": "b923ac2a-62b9-4380-9a54-720ef955b8fb.mp4",
+  "output_video": "b923ac2a-62b9-4380-9a54-720ef955b8fb_dehazed.mp4",
+  "model_layers": 4,
+  "device": "cpu",
+  "use_fp16": false,
+  "input_resolution": "1080x1920",
+  "processing_resolution": "512x512",
+  "total_frames": 1340,
+  "total_time_seconds": 585.58,
+  "average_fps": 2.29,
+  "average_inference_ms": 427.95,
+  "output_size_bytes": 4727067
+}

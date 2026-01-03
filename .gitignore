@@ -1,0 +1,117 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.pyc
+*.pyo
+
+# Virtual Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+venv_simple/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb_checkpoints/
+
+# Model weights and large files
+*.pth
+*.h5
+*.pkl
+*.ckpt
+models/pretrained/*.pth
+!models/pretrained/.gitkeep
+
+# Data directories
+data/Dataset/hazy/*
+data/Dataset/clear/*
+!data/Dataset/hazy/.gitkeep
+!data/Dataset/clear/.gitkeep
+
+# Upload and output directories
+uploads/*
+!uploads/.gitkeep
+outputs/*
+!outputs/.gitkeep
+results/*
+!results/.gitkeep
+
+# Logs
+*.log
+logs/
+*.out
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Testing
+.pytest_cache/
+.coverage
+.tox/
+htmlcov/
+
+# Node (for web-app frontend)
+node_modules/
+npm-debug.log
+yarn-error.log
+web-app/frontend/node_modules/
+web-app/frontend/dist/
+web-app/frontend/build/
+
+# Docker
+*.dockerignore
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Misc
+-r
+4.66.3
+4.8.0
+5.3.0
+torch

@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  # Unified service (Backend serves Frontend)
+  app:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: dehazing-unified
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/uploads:/app/uploads
+      - ./backend/outputs:/app/outputs
+      - ../models/pretrained:/app/models/pretrained:ro
+    environment:
+      - DEVICE=cpu
+      - DEBUG=False
+      - UPLOAD_DIR=/app/uploads
+      - OUTPUT_DIR=/app/outputs
+      - MODEL_DIR=/app/models/pretrained
+    restart: unless-stopped
+    networks:
+      - dehazing-network
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/api/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    driver: bridge
+
+volumes:
+  uploads:
+  outputs:
