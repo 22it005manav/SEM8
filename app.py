@@ -59,10 +59,10 @@ class Settings(BaseSettings):
     )
     
     # Model Configuration
-    DEFAULT_MODEL_LAYERS: int = Field(default=8, description="Default model layers (4, 8, or 16)")
+    DEFAULT_MODEL_LAYERS: int = Field(default=8, description="Default model layers (even numbers >= 4)")
     DEFAULT_MODEL_WEIGHTS: str = Field(default="dehazenet_8layers_best.pth", description="Default model file")
-    DEVICE: str = Field(default="cpu", description="Device: cuda or cpu")
-    ENABLE_FP16: bool = Field(default=False, description="Enable half-precision inference")
+    DEVICE: str = Field(default="auto", description="Device: auto, cuda or cpu")
+    ENABLE_FP16: bool = Field(default=True, description="Enable half-precision inference")
     
     # Processing
     MAX_UPLOAD_SIZE: int = Field(default=500, description="Max upload size in MB")
@@ -89,17 +89,36 @@ class Settings(BaseSettings):
         self.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
         self.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-        # Auto-adjust device based on availability
+        # Auto-detect and set device
         try:
-            if self.DEVICE == "cuda" and not torch.cuda.is_available():
-                print("⚠️  CUDA not available. Falling back to CPU.")
+            if self.DEVICE == "auto":
+                # Auto-detect: prefer CUDA if available
+                if torch.cuda.is_available():
+                    self.DEVICE = "cuda"
+                    try:
+                        gpu_name = torch.cuda.get_device_name(0)
+                        gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1e9
+                        print(f"✅ CUDA auto-detected: {gpu_name}")
+                        print(f"   GPU Memory: {gpu_memory:.2f} GB")
+                        print(f"   CUDA Version: {torch.version.cuda}")
+                    except Exception as e:
+                        print(f"✅ CUDA available but couldn't get device details: {e}")
+                else:
+                    self.DEVICE = "cpu"
+                    print("⚠️  CUDA not available, using CPU")
+                    print("💡 To enable GPU:")
+                    print("   1. Install CUDA Toolkit 11.8: https://developer.nvidia.com/cuda-11-8-0-download-archive")
+                    print("   2. Install cuDNN 8.x for CUDA 11.8")
+                    print("   3. Restart terminal and application")
+            elif self.DEVICE == "cuda" and not torch.cuda.is_available():
+                print("⚠️  CUDA requested but not available. Falling back to CPU.")
+                print("💡 To enable GPU: Install CUDA Toolkit 11.8")
                 self.DEVICE = "cpu"
                 self.ENABLE_FP16 = False
-        except Exception:
-            if self.DEVICE == "cuda":
-                print("⚠️  Torch not installed; defaulting device to CPU.")
-                self.DEVICE = "cpu"
-                self.ENABLE_FP16 = False
+        except Exception as e:
+            print(f"⚠️  Error detecting device: {e}. Defaulting to CPU.")
+            self.DEVICE = "cpu"
+            self.ENABLE_FP16 = False
 
 
 settings = Settings()
@@ -142,7 +161,7 @@ class ProcessRequest(BaseModel):
     model_config = {"protected_namespaces": ()}
     
     job_id: str = Field(..., description="Job ID from upload")
-    model_layers: ModelType = Field(default=ModelType.LAYERS_8, description="Model architecture")
+    model_layers: int = Field(default=8, description="Model architecture (even numbers >= 4, e.g., 4, 8, 16, 24, 32)")
     resolution: int = Field(default=512, description="Processing resolution")
     use_fp16: bool = Field(default=False, description="Use half-precision inference")
     device: Optional[str] = Field(default=None, description="Override device (cuda/cpu)")
@@ -216,13 +235,40 @@ class ModelService:
             cls._instance = super().__new__(cls)
         return cls._instance
     
+    @staticmethod
+    def detect_layers_from_weights(weights_path: Path) -> int:
+        """Detect the actual layer count from a weights file"""
+        try:
+            state_dict = torch.load(weights_path, map_location="cpu")
+            
+            # Count encoder stages
+            encoder_keys = [k for k in state_dict.keys() if k.startswith('encoders.') or k.startswith('enc')]
+            
+            if encoder_keys:
+                if any('encoders.' in k for k in encoder_keys):
+                    # New format: encoders.0, encoders.1, etc.
+                    max_enc_idx = max(int(k.split('.')[1]) for k in encoder_keys if k.startswith('encoders.'))
+                    num_encoders = max_enc_idx + 1
+                else:
+                    # Legacy format: enc1, enc2, etc.
+                    enc_nums = [int(k[3]) for k in encoder_keys if k.startswith('enc') and len(k) > 3 and k[3].isdigit()]
+                    num_encoders = max(enc_nums) if enc_nums else 0
+                
+                # Calculate layers: layers = 2 * (depth + 1), depth = num_encoders
+                layers = 2 * (num_encoders + 1)
+                return layers
+        except Exception as e:
+            print(f"⚠️  Could not detect layers from {weights_path.name}: {e}")
+        
+        return None
+    
     def load_model(
         self,
         layers: int = 8,
         weights_path: Optional[Path] = None,
         device: str = "cuda",
         use_fp16: bool = False
-    ) -> 'DeepDehazeNet':
+    ) -> Any:
         """Load or retrieve cached model"""
         
         if DeepDehazeNet is None:
@@ -242,22 +288,73 @@ class ModelService:
         
         print(f"🔄 Loading model: {layers} layers, device={device}, fp16={use_fp16}")
         
-        model = DeepDehazeNet(num_layers=layers).to(device)
-
-        if not weights_path or not weights_path.exists():
+        # Auto-detect weights if not provided
+        if weights_path is None:
+            weights_path = settings.MODEL_DIR / f"dehazenet_{layers}layers_best.pth"
+            print(f"🔍 Auto-detected weights: {weights_path.name}")
+        
+        if not weights_path.exists():
             available = sorted(p.name for p in settings.MODEL_DIR.glob("dehazenet_*layers_best.pth"))
             available_msg = ", ".join(available) if available else "none found"
             raise FileNotFoundError(
                 f"Weights not found for {layers}-layer model at {weights_path}. "
                 f"Available weights: {available_msg}."
             )
+        
+        # Detect actual architecture from weights
+        actual_layers = self.detect_layers_from_weights(weights_path)
+        if actual_layers and actual_layers != layers:
+            print(f"⚠️  Weights file {weights_path.name} contains {actual_layers}-layer model, not {layers}-layer")
+            print(f"    Adjusting model architecture to match weights...")
+            layers = actual_layers
+            
+            # Update cache key with corrected layers
+            cache_key = (layers, device, use_fp16)
+            if cache_key in self._models:
+                print(f"✅ Using cached model: {layers} layers, device={device}, fp16={use_fp16}")
+                return self._models[cache_key]
+        
+        model = DeepDehazeNet(num_layers=layers).to(device)
 
         try:
             state_dict = torch.load(weights_path, map_location=device)
+            # Convert legacy checkpoints to new format
+            state_dict = model._convert_legacy_checkpoint(state_dict)
             model.load_state_dict(state_dict)
             print(f"✅ Loaded weights from: {weights_path}")
-        except Exception as e:
-            raise RuntimeError(f"Failed to load weights from {weights_path}: {e}")
+        except RuntimeError as load_error:
+            # Check if this is an architecture mismatch error
+            error_msg = str(load_error)
+            is_mismatch = "size mismatch" in error_msg or "Missing key" in error_msg
+            
+            if is_mismatch and layers > 8:
+                print(f"⚠️  Architecture mismatch for {layers}-layer model weights")
+                print(f"    Error: {error_msg[:100]}...")
+                print(f"    Falling back to 8-layer model...")
+                
+                # Recursively try 8 layers
+                if layers != 8:
+                    return self.load_model(device=device, layers=8, use_fp16=use_fp16, weights_path=None)
+                else:
+                    raise RuntimeError(f"Failed to load 8-layer weights. {load_error}")
+            
+            # Try fallback checkpoint (final instead of best)
+            fallback_path = settings.MODEL_DIR / f"dehazenet_{layers}_final.pth"
+            if fallback_path.exists() and fallback_path != weights_path:
+                print(f"⚠️  Failed to load {weights_path.name}, trying fallback: {fallback_path.name}")
+                try:
+                    state_dict = torch.load(fallback_path, map_location=device)
+                    state_dict = model._convert_legacy_checkpoint(state_dict)
+                    model.load_state_dict(state_dict)
+                    print(f"✅ Loaded weights from fallback: {fallback_path}")
+                except Exception as fallback_e:
+                    # Last resort: try 8 layers
+                    if layers > 8:
+                        print(f"⚠️  Fallback also failed. Trying 8-layer model...")
+                        return self.load_model(device=device, layers=8, use_fp16=use_fp16, weights_path=None)
+                    raise RuntimeError(f"Failed to load both {weights_path.name} and {fallback_path.name}: {fallback_e}")
+            else:
+                raise RuntimeError(f"Failed to load weights from {weights_path}: {load_error}")
         
         if use_fp16 and device == "cuda":
             model = model.half()
@@ -308,7 +405,7 @@ class ModelService:
     @torch.no_grad()
     def infer_frame(
         self,
-        model: 'DeepDehazeNet',
+        model: Any,
         frame: np.ndarray,
         target_size: Tuple[int, int] = (512, 512),
         device: str = "cuda",
@@ -364,6 +461,15 @@ class VideoProcessor:
     ):
         """Process a video file with dehazing"""
         
+        print(f"\n{'='*70}")
+        print(f"🎬 Starting video processing for job: {job_id}")
+        print(f"   Input: {input_path.name}")
+        print(f"   Model: {model_layers} layers")
+        print(f"   Device: {device}")
+        print(f"   Resolution: {resolution}x{resolution}")
+        print(f"   FP16: {use_fp16}")
+        print(f"{'='*70}\n")
+        
         self.jobs[job_id] = {
             "status": ProcessingStatus.PROCESSING,
             "progress": 0.0,
@@ -378,14 +484,20 @@ class VideoProcessor:
         }
         
         try:
+            # Validate and adjust device
+            if device == "cuda" and not torch.cuda.is_available():
+                print(f"⚠️  CUDA requested but not available, switching to CPU")
+                device = "cpu"
+                use_fp16 = False
+            
             weights_filename = f"dehazenet_{model_layers}layers_best.pth"
             weights_path = settings.MODEL_DIR / weights_filename
             
+            print(f"📂 Looking for weights: {weights_filename}")
             # Check if weights exist, fallback if necessary
             if not weights_path.exists() and str(model_layers) in MODEL_FALLBACK_MAP:
                 fallback_layers = int(MODEL_FALLBACK_MAP[str(model_layers)])
                 print(f"⚠️  Model weights for {model_layers} layers not found. Using {fallback_layers} layers as fallback.")
-                state["error_message"] = f"Using {fallback_layers}-layer model (4-layer not available)"
                 model_layers = fallback_layers
                 weights_filename = f"dehazenet_{model_layers}layers_best.pth"
                 weights_path = settings.MODEL_DIR / weights_filename
@@ -432,7 +544,8 @@ class VideoProcessor:
             
             output_width = resolution * 2
             output_height = resolution
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            # Use standard MP4v fourcc; suppress type checker warning on Windows OpenCV
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")  # type: ignore[attr-defined]
             out = cv2.VideoWriter(
                 str(output_path),
                 fourcc,
@@ -488,8 +601,8 @@ class VideoProcessor:
                         _, dehazed_buffer = cv2.imencode('.jpg', dehazed_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
                         
                         status_update["preview"] = {
-                            "original": base64.b64encode(orig_buffer).decode('utf-8'),
-                            "dehazed": base64.b64encode(dehazed_buffer).decode('utf-8')
+                            "original": base64.b64encode(bytes(orig_buffer)).decode('utf-8'),
+                            "dehazed": base64.b64encode(bytes(dehazed_buffer)).decode('utf-8')
                         }
                     
                     await progress_callback(job_id, status_update)
@@ -533,8 +646,16 @@ class VideoProcessor:
             print(f"✅ Job {job_id} completed successfully")
             
         except Exception as e:
+            import traceback
             error_msg = f"Processing failed: {str(e)}"
-            print(f"❌ Job {job_id} failed: {error_msg}")
+            error_trace = traceback.format_exc()
+            
+            print(f"\n{'='*70}")
+            print(f"❌ Job {job_id} FAILED")
+            print(f"Error: {error_msg}")
+            print(f"\nFull traceback:")
+            print(error_trace)
+            print(f"{'='*70}\n")
             
             self.update_job_status(job_id, {
                 "status": ProcessingStatus.FAILED,
@@ -583,8 +704,17 @@ manager = ConnectionManager()
 async def upload_video(file: UploadFile = File(...)):
     """Upload a video file for processing"""
     
+    # Validate filename exists
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Filename is required")
+    
+    # Validate file has extension
+    if '.' not in file.filename:
+        raise HTTPException(status_code=400, detail="File must have an extension")
+    
+    # Validate file extension
     file_ext = file.filename.split('.')[-1].lower()
-    if file_ext not in settings.ALLOWED_EXTENSIONS:
+    if not file_ext or file_ext not in settings.ALLOWED_EXTENSIONS:
         raise HTTPException(
             status_code=400,
             detail=f"Invalid file type. Allowed: {', '.join(settings.ALLOWED_EXTENSIONS)}"
@@ -614,7 +744,7 @@ async def upload_video(file: UploadFile = File(...)):
     
     return UploadResponse(
         job_id=job_id,
-        filename=file.filename,
+        filename=file.filename or "unknown",
         file_size=file_size,
         upload_time=datetime.now()
     )
@@ -634,7 +764,20 @@ async def start_processing(
     input_path = upload_files[0]
     output_path = settings.OUTPUT_DIR / f"{request.job_id}_dehazed.mp4"
     
+    # Determine device with proper fallback
     device = request.device if request.device else settings.DEVICE
+    
+    # Ensure device is valid
+    if device == "auto":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    elif device not in ["cuda", "cpu"]:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    # Disable FP16 if not using CUDA
+    use_fp16 = request.use_fp16 and device == "cuda" and torch.cuda.is_available()
+    
+    print(f"\n📝 Processing Job {request.job_id}:")
+    print(f"   Device: {device} (CUDA available: {torch.cuda.is_available()})\n")
     
     async def progress_callback(job_id: str, update: dict):
         await manager.send_update(job_id, update)
@@ -647,7 +790,7 @@ async def start_processing(
         model_layers=int(request.model_layers),
         resolution=request.resolution,
         device=device,
-        use_fp16=request.use_fp16 and device == "cuda",
+        use_fp16=use_fp16,
         progress_callback=progress_callback
     )
     
@@ -748,8 +891,7 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str):
             await websocket.send_json({"type": "heartbeat", "timestamp": datetime.now().isoformat()})
     except WebSocketDisconnect:
         manager.disconnect(job_id)
-
-
+        
 @router.delete("/job/{job_id}")
 async def delete_job(job_id: str):
     """Delete job and associated files"""
@@ -775,17 +917,95 @@ async def delete_job(job_id: str):
 
 @router.get("/health")
 async def health_check():
-    """Health check endpoint"""
+    """Health check endpoint with detailed GPU info"""
     
-    return {
-        "status": "healthy",
-        "timestamp": datetime.now().isoformat(),
-        "cuda_available": torch.cuda.is_available(),
-        "cuda_device": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
-        "upload_dir": str(settings.UPLOAD_DIR),
-        "output_dir": str(settings.OUTPUT_DIR),
-        "model_dir": str(settings.MODEL_DIR)
-    }
+    try:
+        cuda_available = torch.cuda.is_available()
+        cuda_device = None
+        cuda_version = None
+        gpu_memory = None
+        pytorch_version = torch.__version__
+        
+        if cuda_available:
+            try:
+                cuda_device = torch.cuda.get_device_name(0)
+                cuda_version = torch.version.cuda
+                gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1e9
+            except Exception:
+                pass
+        
+        return {
+            "status": "healthy",
+            "timestamp": datetime.now().isoformat(),
+            "cuda_available": cuda_available,
+            "cuda_device": cuda_device,
+            "cuda_version": cuda_version,
+            "gpu_memory_gb": round(gpu_memory, 2) if gpu_memory else None,
+            "pytorch_version": pytorch_version,
+            "device_setting": settings.DEVICE,
+            "enable_fp16": settings.ENABLE_FP16,
+            "upload_dir": str(settings.UPLOAD_DIR),
+            "output_dir": str(settings.OUTPUT_DIR),
+            "model_dir": str(settings.MODEL_DIR)
+        }
+    except Exception as e:
+        import traceback
+        print(f"❌ Health check error: {e}")
+        print(traceback.format_exc())
+        
+        return {
+            "status": "error",
+            "timestamp": datetime.now().isoformat(),
+            "cuda_available": False,
+            "cuda_device": None,
+            "cuda_version": None,
+            "pytorch_version": torch.__version__,
+            "error": str(e)
+        }
+
+
+@router.get("/system-info")
+async def system_info():
+    """Detailed system information and GPU availability diagnostics"""
+    
+    try:
+        cuda_available = torch.cuda.is_available()
+        
+        info = {
+            "pytorch_version": torch.__version__,
+            "cuda_available": cuda_available,
+            "device_setting": settings.DEVICE,
+            "gpu_diagnostics": {}
+        }
+        
+        if cuda_available:
+            try:
+                info["gpu_diagnostics"] = {
+                    "device_name": torch.cuda.get_device_name(0),
+                    "cuda_version": torch.version.cuda,
+                    "total_memory_gb": round(torch.cuda.get_device_properties(0).total_memory / 1e9, 2),
+                    "status": "✅ GPU Ready for inference"
+                }
+            except Exception as e:
+                info["gpu_diagnostics"]["error"] = str(e)
+        else:
+            info["gpu_diagnostics"] = {
+                "status": "❌ GPU Not Available (CUDA Toolkit NOT installed)",
+                "solution": "Install CUDA Toolkit 11.8 to enable GPU acceleration",
+                "steps": [
+                    "1. Download CUDA Toolkit 11.8",
+                    "2. Install from: https://developer.nvidia.com/cuda-11-8-0-download-archive",
+                    "3. Install cuDNN 8.x for CUDA 11.8",
+                    "4. Restart terminal and application"
+                ]
+            }
+        
+        return info
+    except Exception as e:
+        return {
+            "error": str(e),
+            "cuda_available": False
+        }
 
 
 # ============================================================================
@@ -796,22 +1016,42 @@ async def health_check():
 async def lifespan(app: FastAPI):
     """Startup and shutdown events"""
     # Startup
-    print("=" * 60)
-    print("🚀 Video Dehazing Backend Starting...")
-    print("=" * 60)
-    print(f"📁 Upload Directory: {settings.UPLOAD_DIR}")
-    print(f"📁 Output Directory: {settings.OUTPUT_DIR}")
-    print(f"📁 Model Directory: {settings.MODEL_DIR}")
-    print(f"🔧 Device: {settings.DEVICE}")
-    print(f"🎯 Default Model: {settings.DEFAULT_MODEL_LAYERS} layers")
-    print(f"🌐 Access at: http://localhost:{settings.PORT}")
-    print(f"📚 API Docs: http://localhost:{settings.PORT}/docs")
-    print("=" * 60)
+    print("\n" + "=" * 70)
+    print("🚀 VIDEO DEHAZING BACKEND - STARTING")
+    print("=" * 70)
+    print(f"📁 Upload Directory:   {settings.UPLOAD_DIR}")
+    print(f"📁 Output Directory:   {settings.OUTPUT_DIR}")
+    print(f"📁 Model Directory:    {settings.MODEL_DIR}")
+    print(f"🔧 Device:             {settings.DEVICE}")
+    print(f"💾 GPU Available:      {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        print(f"📊 GPU Device:         {torch.cuda.get_device_name(0)}")
+        print(f"🎯 CUDA Version:       {torch.version.cuda}")
+    print(f"🎯 Default Model:      {settings.DEFAULT_MODEL_LAYERS} layers")
+    print(f"🌐 API URL:            http://localhost:{settings.PORT}")
+    print(f"📚 API Docs:           http://localhost:{settings.PORT}/docs")
+    print(f"🌐 Frontend (if built):http://localhost:{settings.PORT}")
+    print("=" * 70)
+    print("\n💡 Press Ctrl+C to shutdown gracefully\n")
     
     yield
     
     # Shutdown
-    print("\n🛑 Shutting down...")
+    print("\n" + "=" * 70)
+    print("🛑 SHUTDOWN - Cleaning up resources...")
+    print("=" * 70)
+    
+    # Clear model cache and GPU memory
+    try:
+        model_service.clear_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        print("✅ GPU memory cleared")
+    except Exception as e:
+        print(f"⚠️  Error during cleanup: {e}")
+    
+    print("✅ Backend shutdown complete")
+    print("=" * 70 + "\n")
 
 
 app = FastAPI(
@@ -892,5 +1132,5 @@ if __name__ == "__main__":
         app,
         host=settings.HOST,
         port=settings.PORT,
-        reload=settings.RELOAD,
+        reload=False,
     )

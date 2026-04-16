@@ -82,10 +82,43 @@ class ModelService:
         # Load weights if provided
         try:
             state_dict = torch.load(weights_path, map_location=device)
+            # Convert legacy checkpoints to new format
+            state_dict = model._convert_legacy_checkpoint(state_dict)
             model.load_state_dict(state_dict)
             print(f"✅ Loaded weights from: {weights_path}")
-        except Exception as e:
-            raise RuntimeError(f"Failed to load weights from {weights_path}: {e}")
+        except RuntimeError as load_error:
+            # Check if this is an architecture mismatch error
+            error_msg = str(load_error)
+            is_mismatch = "size mismatch" in error_msg or "Missing key" in error_msg
+            
+            if is_mismatch and layers > 8:
+                print(f"⚠️  Architecture mismatch for {layers}-layer model weights")
+                print(f"    Error: {error_msg[:100]}...")
+                print(f"    Falling back to 8-layer model...")
+                
+                # Recursively try 8 layers
+                if layers != 8:
+                    return self.load_model(device=device, layers=8, use_fp16=use_fp16, weights_path=None)
+                else:
+                    raise RuntimeError(f"Failed to load 8-layer weights. {load_error}")
+            
+            # Try fallback checkpoint (final instead of best)
+            fallback_path = settings.MODEL_DIR / f"dehazenet_{layers}_final.pth"
+            if fallback_path.exists() and fallback_path != weights_path:
+                print(f"⚠️  Failed to load {weights_path.name}, trying fallback: {fallback_path.name}")
+                try:
+                    state_dict = torch.load(fallback_path, map_location=device)
+                    state_dict = model._convert_legacy_checkpoint(state_dict)
+                    model.load_state_dict(state_dict)
+                    print(f"✅ Loaded weights from fallback: {fallback_path}")
+                except Exception as fallback_e:
+                    # Last resort: try 8 layers
+                    if layers > 8:
+                        print(f"⚠️  Fallback also failed. Trying 8-layer model...")
+                        return self.load_model(device=device, layers=8, use_fp16=use_fp16, weights_path=None)
+                    raise RuntimeError(f"Failed to load both {weights_path.name} and {fallback_path.name}: {fallback_e}")
+            else:
+                raise RuntimeError(f"Failed to load weights from {weights_path}: {load_error}")
         
         # Convert to half precision if requested
         if use_fp16 and device == "cuda":

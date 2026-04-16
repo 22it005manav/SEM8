@@ -60,7 +60,10 @@ def dehaze_video(args):
         print("   Train a model first or check the path")
         return
     
-    model.load_state_dict(torch.load(args.weights, map_location=device))
+    # Load checkpoint with legacy conversion support
+    checkpoint = torch.load(args.weights, map_location=device)
+    checkpoint = model._convert_legacy_checkpoint(checkpoint)
+    model.load_state_dict(checkpoint)
     model.eval()
     print(f"✅ Loaded weights from: {args.weights}")
     
@@ -222,8 +225,8 @@ def main():
     # Model arguments
     parser.add_argument('--weights', type=str, default='8_layers_model/best_model_8_8.pth',
                        help='Path to model weights file')
-    parser.add_argument('--layers', type=int, default=8, choices=[4, 8, 16],
-                       help='Number of layers in model (must match weights)')
+    parser.add_argument('--layers', type=int, default=8,
+                       help='Number of layers in model (must match weights, e.g., 4, 8, 16, 24, 32)')
     
     # Processing arguments
     parser.add_argument('--resize', type=int, nargs=2, default=[512, 512],

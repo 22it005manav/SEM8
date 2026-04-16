@@ -9,7 +9,8 @@ TEST_CLEAR = os.path.join(DATASET_ROOT, "test/clear")
 
 # ===== MODEL CONFIG =====
 MODEL_ARCHITECTURE = "DeepDehazeNet"
-NUM_LAYERS = 8  # Options: 4, 8, 16
+NUM_LAYERS = 8  # Options: any even number >= 4 (e.g., 4, 8, 16, 24, 32)
+                # Note: Deeper models require more VRAM and training data
 PRETRAINED_MODEL = "models/pretrained/best_model.pth"
 
 # ===== TRAINING CONFIG =====
@@ -22,7 +23,7 @@ DEVICE = "cuda"  # or "cpu"
 
 # ===== INFERENCE CONFIG =====
 OUTPUT_VIDEO_SIZE = (512, 512)  # (height, width)
-FP16_INFERENCE = True
+FP16_INFERENCE = True  # Enable FP16 for faster inference on GPU
 INPUT_VIDEO = "input_video.mp4"
 OUTPUT_VIDEO = "results/dehazed_videos/output.mp4"
 

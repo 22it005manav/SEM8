@@ -4,6 +4,7 @@ export function SplitScreenComparison({ originalVideoRef, dehazedVideoRef, onPla
   const [sliderPosition, setSliderPosition] = useState(50);
   const [isDragging, setIsDragging] = useState(false);
   const containerRef = useRef(null);
+  const safeSlider = Math.min(100, Math.max(1, sliderPosition));
 
   // Handle slider drag
   const handleMouseDown = () => setIsDragging(true);
@@ -59,7 +60,7 @@ export function SplitScreenComparison({ originalVideoRef, dehazedVideoRef, onPla
         {/* Dehazed Video - Clipped */}
         <div 
           className="absolute inset-0 w-full h-full overflow-hidden"
-          style={{ width: `${sliderPosition}%` }}
+          style={{ width: `${safeSlider}%` }}
         >
           <video
             ref={dehazedVideoRef}
@@ -68,7 +69,7 @@ export function SplitScreenComparison({ originalVideoRef, dehazedVideoRef, onPla
             onPause={(e) => onPlayPause?.(e, false)}
             onTimeUpdate={(e) => onTimeUpdate?.(e, false)}
             className="absolute inset-0 w-full h-full object-cover bg-black"
-            style={{ width: `${(100 / sliderPosition) * 100}%` }}
+            style={{ width: `${(100 / safeSlider) * 100}%` }}
           />
           <div className="absolute top-4 left-4 px-4 py-2 bg-gradient-to-r from-green-600/90 to-emerald-600/90 backdrop-blur-md rounded-xl text-xs font-bold text-white border-2 border-green-400/50 shadow-lg">
             Dehazed (Clear)
@@ -78,7 +79,7 @@ export function SplitScreenComparison({ originalVideoRef, dehazedVideoRef, onPla
         {/* Slider Handle */}
         <div
           className="absolute top-0 bottom-0 w-1.5 bg-gradient-to-b from-purple-400 via-pink-400 to-indigo-400 cursor-col-resize hover:w-3 transition-all shadow-2xl"
-          style={{ left: `${sliderPosition}%`, transform: 'translateX(-50%)' }}
+          style={{ left: `${safeSlider}%`, transform: 'translateX(-50%)' }}
           onMouseDown={handleMouseDown}
         >
           {/* Handle Thumb */}
@@ -96,7 +97,7 @@ export function SplitScreenComparison({ originalVideoRef, dehazedVideoRef, onPla
 
         {/* Position Label */}
         <div className="absolute top-5 left-1/2 transform -translate-x-1/2 px-5 py-2.5 bg-gradient-to-r from-purple-600/90 to-pink-600/90 backdrop-blur-md rounded-xl text-sm font-black text-white border-2 border-pink-400/50 pointer-events-none shadow-2xl">
-          {sliderPosition.toFixed(0)}%
+          {safeSlider.toFixed(0)}%
         </div>
       </div>
 

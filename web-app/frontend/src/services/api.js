@@ -4,10 +4,17 @@ const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
 
 const api = axios.create({
   baseURL: API_BASE_URL,
-  headers: {
-    'Content-Type': 'application/json',
-  },
 });
+
+const inferWebSocketUrl = () => {
+  try {
+    const base = new URL(API_BASE_URL);
+    const wsScheme = base.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${wsScheme}//${base.host}/api/ws/`;
+  } catch (e) {
+    return 'ws://localhost:8000/api/ws/';
+  }
+};
 
 export const videoService = {
   /**
@@ -18,9 +25,7 @@ export const videoService = {
     formData.append('file', file);
 
     const response = await api.post('/upload', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
+      // Don't set Content-Type - axios will set it automatically with the correct boundary
       onUploadProgress: (progressEvent) => {
         if (onProgress && progressEvent.total) {
           const percentCompleted = Math.round(
@@ -94,7 +99,7 @@ export const videoService = {
  */
 export class WebSocketService {
   constructor(jobId, onMessage) {
-    const wsUrl = `ws://localhost:8000/api/ws/${jobId}`;
+    const wsUrl = `${inferWebSocketUrl()}${jobId}`;
     this.ws = new WebSocket(wsUrl);
     
     this.ws.onopen = () => {

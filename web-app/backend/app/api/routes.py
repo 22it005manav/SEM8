@@ -52,9 +52,17 @@ async def upload_video(file: UploadFile = File(...)):
     
     Returns a unique job_id for tracking
     """
+    # Validate filename exists
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Filename is required")
+    
+    # Validate file has extension
+    if '.' not in file.filename:
+        raise HTTPException(status_code=400, detail="File must have an extension")
+    
     # Validate file extension
     file_ext = file.filename.split('.')[-1].lower()
-    if file_ext not in settings.ALLOWED_EXTENSIONS:
+    if not file_ext or file_ext not in settings.ALLOWED_EXTENSIONS:
         raise HTTPException(
             status_code=400,
             detail=f"Invalid file type. Allowed: {', '.join(settings.ALLOWED_EXTENSIONS)}"

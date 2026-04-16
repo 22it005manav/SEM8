@@ -1,0 +1,20 @@
+{
+  "name": "real-time-dehazing-deep-learning",
+  "version": "1.0.0",
+  "description": "**A production-ready deep learning system for removing haze and fog from video and image content using advanced CNN architectures, with GPU acceleration and modern web interface.**",
+  "homepage": "https://github.com/22it005manav/SEM8#readme",
+  "bugs": {
+    "url": "https://github.com/22it005manav/SEM8/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/22it005manav/SEM8.git"
+  },
+  "license": "ISC",
+  "author": "",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  }
+}

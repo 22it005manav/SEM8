@@ -21,7 +21,7 @@ opencv-contrib-python==4.10.0.84
 Pillow==11.3.0
 
 # Scientific Computing (compatible with PyTorch)
-numpy==1.26.4
+numpy<2.0  # PyTorch 2.2.2 is not compatible with NumPy 2.0+
 scipy==1.13.1
 
 # Data Processing

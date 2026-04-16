@@ -15,13 +15,6 @@ class ProcessingStatus(str, Enum):
     FAILED = "failed"
 
 
-class ModelType(str, Enum):
-    """Available model architectures"""
-    LAYERS_4 = "4"
-    LAYERS_8 = "8"
-    LAYERS_16 = "16"
-
-
 class UploadResponse(BaseModel):
     """Response after successful upload"""
     job_id: str = Field(..., description="Unique job identifier")
@@ -36,7 +29,7 @@ class ProcessRequest(BaseModel):
     model_config = {"protected_namespaces": ()}  # Allow model_ prefix
     
     job_id: str = Field(..., description="Job ID from upload")
-    model_layers: ModelType = Field(default=ModelType.LAYERS_8, description="Model architecture")
+    model_layers: int = Field(default=8, description="Model architecture (even numbers >= 4, e.g., 4, 8, 16, 24, 32)")
     resolution: int = Field(default=512, description="Processing resolution (e.g., 512 for 512x512)")
     use_fp16: bool = Field(default=False, description="Use half-precision inference")
     device: Optional[str] = Field(default=None, description="Override device (cuda/cpu)")

@@ -274,8 +274,8 @@ def main():
                        help='Root directory for validation data (if same as train_root, will split 80/20)')
     
     # Model arguments
-    parser.add_argument('--layers', type=int, default=8, choices=[4, 8, 16],
-                       help='Number of layers (4, 8, or 16)')
+    parser.add_argument('--layers', type=int, default=8,
+                       help='Number of layers (even numbers >= 4, e.g., 4, 8, 16, 24, 32)')
     parser.add_argument('--resume_from', type=str, default=None,
                        help='Path to pretrained weights to fine-tune from')
     

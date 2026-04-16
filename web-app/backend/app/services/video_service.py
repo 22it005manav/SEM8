@@ -166,7 +166,10 @@ class VideoProcessor:
                 
                 # Calculate statistics
                 elapsed = time.time() - start_time
-                progress = (frame_count / total_frames) * 100
+                if total_frames > 0:
+                    progress = (frame_count / total_frames) * 100
+                else:
+                    progress = 0.0
                 current_fps = frame_count / elapsed if elapsed > 0 else 0
                 remaining_frames = total_frames - frame_count
                 eta = (remaining_frames / current_fps) if current_fps > 0 else 0

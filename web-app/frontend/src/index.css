@@ -17,9 +17,10 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #0f172a 100%);
-  background-attachment: fixed;
+  background-color: #0a0d1a;
+  /* Navy 900 */
   color: #e2e8f0;
+  /* Slate 200 */
   overflow-x: hidden;
 }
 

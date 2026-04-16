@@ -1,10 +1,15 @@
-import { useState, useEffect, useRef } from 'react';
-import { Upload, Play, Download, Trash2, Settings, AlertCircle, CheckCircle, Loader, ArrowRight, Sparkles, Zap, Video, FileVideo, Clock, Gauge, Film } from 'lucide-react';
+import { useState, useEffect, useRef, useMemo } from 'react';
+import {
+  Upload, Play, Download, Trash2, Settings, AlertCircle, CheckCircle,
+  Loader, ArrowRight, Sparkles, Zap, Video, FileVideo, Clock, Gauge,
+  Film, HelpCircle, Shield, Activity, Layers, UploadCloud, X
+} from 'lucide-react';
 import { videoService, WebSocketService } from './services/api';
 import { SplitScreenComparison } from './components/SplitScreenComparison';
 import './App.css';
 
 function App() {
+  // State Management
   const [selectedFile, setSelectedFile] = useState(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [jobId, setJobId] = useState(null);
@@ -14,15 +19,50 @@ function App() {
   const [processing, setProcessing] = useState(false);
   const [livePreview, setLivePreview] = useState({ original: null, dehazed: null });
   const [liveFps, setLiveFps] = useState(0);
+  const [showReview, setShowReview] = useState(false);
+
+  const canUpload = !processing && !uploading && Boolean(selectedFile) && !jobId;
+  const canStart = Boolean(jobId) && !processing;
+  const canReview = Boolean(selectedFile);
+  const canDownload = Boolean(status?.output_video_path);
+
+  // Processing Stage Logic
+  const stageText = useMemo(() => {
+    if (status?.stage) return status.stage;
+    const progressVal = status?.progress || 0;
+    if (progressVal === 0) return 'Initializing model...';
+    if (progressVal >= 100) return 'Finalizing video...';
+    return 'Processing frames';
+  }, [status]);
+
+  // Live Stats Logic
+  const liveStats = useMemo(() => {
+    const framesProcessed = status?.current_frame || 0;
+    const totalFrames = status?.total_frames || 0;
+    const fps = status?.fps ?? liveFps ?? 0;
+    const elapsed = status?.elapsed_time || 0;
+    let remaining = status?.estimated_remaining;
+
+    if ((remaining === undefined || remaining === null) && fps > 0 && totalFrames > framesProcessed) {
+      const remainingFrames = totalFrames - framesProcessed;
+      remaining = remainingFrames / fps;
+    }
+
+    if (remaining === undefined || remaining === null) remaining = 0;
+
+    return { framesProcessed, totalFrames, fps, elapsed, remaining };
+  }, [status, liveFps]);
 
   // Settings
-  // Default to 8-layer model (only pretrained weights shipped by default)
   const [modelLayers, setModelLayers] = useState('8');
   const [resolution, setResolution] = useState(512);
+  const [useGpu, setUseGpu] = useState(false);
+  const [cudaAvailable, setCudaAvailable] = useState(null);
   const [useFp16, setUseFp16] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
 
-  // Video refs
+  // Refs
   const containerRef = useRef(null);
   const originalCanvasRef = useRef(null);
   const dehazedCanvasRef = useRef(null);
@@ -31,105 +71,115 @@ function App() {
   const wsRef = useRef(null);
   const pollIntervalRef = useRef(null);
   const [syncedPlay, setSyncedPlay] = useState(false);
+  const objectUrlRef = useRef(null);
 
-  // File selection
-  const handleFileSelect = (event) => {
+  const handleFileSelect = async (event) => {
     const file = event.target.files[0];
-    if (file) {
-      const validTypes = ['video/mp4', 'video/avi', 'video/x-msvideo', 'video/quicktime', 'video/x-matroska'];
-      if (!validTypes.includes(file.type)) {
-        setError('Invalid file type. Please upload MP4, AVI, MOV, or MKV');
-        return;
-      }
-
-      if (file.size > 500 * 1024 * 1024) {
-        setError('File too large. Maximum size is 500MB');
-        return;
-      }
-
-      setSelectedFile(file);
-      setError(null);
-
-      // Preview original video
-      const url = URL.createObjectURL(file);
-      if (originalVideoRef.current) {
-        originalVideoRef.current.src = url;
-      }
+    if (!file) return;
+    
+    // Validate file name
+    if (!file.name || file.name.trim() === '') {
+      setError('Invalid file: filename is missing');
+      return;
     }
+    
+    // Validate file extension
+    if (!file.name.includes('.')) {
+      setError('Invalid file: file must have an extension');
+      return;
+    }
+    
+    const validTypes = ['video/mp4', 'video/avi', 'video/x-msvideo', 'video/quicktime', 'video/x-matroska'];
+    if (!validTypes.includes(file.type)) {
+      setError('Invalid file type. Please upload MP4, AVI, MOV, or MKV');
+      return;
+    }
+    if (file.size > 500 * 1024 * 1024) {
+      setError('File too large. Maximum size is 500MB');
+      return;
+    }
+    if (file.size === 0) {
+      setError('Invalid file: file is empty');
+      return;
+    }
+    
+    stopPolling();
+    if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+    objectUrlRef.current = URL.createObjectURL(file);
+    setSelectedFile(file);
+    setJobId(null);
+    setStatus(null);
+    setUploadProgress(0);
+    setProcessing(false);
+    setLivePreview({ original: null, dehazed: null });
+    setLiveFps(0);
+    setShowReview(false);
+    setError(null);
+    if (originalVideoRef.current) originalVideoRef.current.src = objectUrlRef.current;
   };
 
-  // Upload video
   const handleUpload = async () => {
-    if (!selectedFile) return;
-
+    if (!selectedFile || uploading) return;
     setUploading(true);
-    setError(null);
     setUploadProgress(0);
+    setError(null);
 
     try {
-      const response = await videoService.uploadVideo(
-        selectedFile,
-        (progress) => setUploadProgress(progress)
-      );
-
+      const response = await videoService.uploadVideo(selectedFile, (progress) => setUploadProgress(progress));
       setJobId(response.job_id);
-      console.log('Upload successful:', response);
+      setError(null);
     } catch (err) {
-      setError(err.response?.data?.detail || 'Upload failed');
       console.error('Upload error:', err);
+      const errorMsg = err.response?.data?.detail || err.message || 'Upload failed';
+      setError(`Upload failed: ${errorMsg}`);
+      setJobId(null);
     } finally {
       setUploading(false);
     }
   };
 
-  // Start processing
-  const handleProcess = async () => {
-    if (!jobId) return;
+  const handleReview = () => {
+    if (!selectedFile) return;
+    setShowReview(true);
+    if (originalVideoRef.current && objectUrlRef.current) {
+      originalVideoRef.current.src = objectUrlRef.current;
+    }
+  };
 
+  const handleProcess = async () => {
+    if (!canStart) return;
+    if (useGpu && cudaAvailable === false) {
+      setError('CUDA is not available. Switch to CPU mode.');
+      return;
+    }
+    const chosenDevice = useGpu && cudaAvailable ? 'cuda' : 'cpu';
     setProcessing(true);
     setError(null);
+    setStatus({ progress: 0, current_frame: 0, total_frames: status?.total_frames || 0, stage: 'Starting...' });
 
     try {
-      await videoService.startProcessing(jobId, {
-        modelLayers,
-        resolution,
-        useFp16,
-      });
-
-      // Connect WebSocket for real-time updates
+      await videoService.startProcessing(jobId, { modelLayers, resolution, useFp16, device: chosenDevice });
       wsRef.current = new WebSocketService(jobId, (update) => {
-        console.log('WebSocket update:', update);
         if (update.progress !== undefined) {
           setStatus(prev => ({ ...prev, ...update }));
           setLiveFps(update.fps || 0);
-
-          // Update live preview frames
-          if (update.preview) {
-            setLivePreview({
-              original: update.preview.original,
-              dehazed: update.preview.dehazed
-            });
-          }
+          if (update.preview) setLivePreview({ original: update.preview.original, dehazed: update.preview.dehazed });
         }
       });
-
-      // Start polling as backup
       startPolling();
-
     } catch (err) {
       setError(err.response?.data?.detail || 'Processing failed');
       setProcessing(false);
     }
   };
 
-  // Poll status
   const startPolling = () => {
     pollIntervalRef.current = setInterval(async () => {
       try {
         const statusData = await videoService.getStatus(jobId);
         setStatus(statusData);
-
         if (statusData.status === 'completed') {
+          setStatus({ ...statusData, progress: 100, stage: 'Completed' });
           setProcessing(false);
           stopPolling();
           loadOutputVideo();
@@ -138,24 +188,15 @@ function App() {
           setProcessing(false);
           stopPolling();
         }
-      } catch (err) {
-        console.error('Status poll error:', err);
-      }
+      } catch (err) { console.error(err); }
     }, 2000);
   };
 
   const stopPolling = () => {
-    if (pollIntervalRef.current) {
-      clearInterval(pollIntervalRef.current);
-      pollIntervalRef.current = null;
-    }
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-    }
+    if (pollIntervalRef.current) { clearInterval(pollIntervalRef.current); pollIntervalRef.current = null; }
+    if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
   };
 
-  // Load output video
   const loadOutputVideo = () => {
     if (jobId && dehazedVideoRef.current) {
       const url = videoService.getDownloadUrl(jobId);
@@ -163,37 +204,27 @@ function App() {
     }
   };
 
-  // Sync video playback
   const handlePlayPause = (e, isOriginal) => {
     const sourceVideo = isOriginal ? originalVideoRef.current : dehazedVideoRef.current;
     const targetVideo = isOriginal ? dehazedVideoRef.current : originalVideoRef.current;
-
+    if (!sourceVideo) return;
     if (syncedPlay) {
-      if (sourceVideo.paused) {
-        targetVideo?.pause();
-      } else {
-        targetVideo?.play();
-      }
+      if (sourceVideo.paused) targetVideo?.pause();
+      else targetVideo?.play();
     }
   };
 
   const handleTimeUpdate = (e, isOriginal) => {
     const sourceVideo = isOriginal ? originalVideoRef.current : dehazedVideoRef.current;
     const targetVideo = isOriginal ? dehazedVideoRef.current : originalVideoRef.current;
-
+    if (!sourceVideo || !targetVideo) return;
     if (syncedPlay && targetVideo && Math.abs(targetVideo.currentTime - sourceVideo.currentTime) > 0.1) {
       targetVideo.currentTime = sourceVideo.currentTime;
     }
   };
 
-  // Download output
-  const handleDownload = () => {
-    if (jobId) {
-      window.open(videoService.getDownloadUrl(jobId), '_blank');
-    }
-  };
+  const handleDownload = () => { if (jobId) window.open(videoService.getDownloadUrl(jobId), '_blank'); };
 
-  // Reset
   const handleReset = () => {
     stopPolling();
     setSelectedFile(null);
@@ -202,516 +233,582 @@ function App() {
     setError(null);
     setUploadProgress(0);
     setProcessing(false);
+    setShowReview(false);
+    setLivePreview({ original: null, dehazed: null });
+    setLiveFps(0);
     if (originalVideoRef.current) originalVideoRef.current.src = '';
     if (dehazedVideoRef.current) dehazedVideoRef.current.src = '';
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current);
+      objectUrlRef.current = null;
+    }
   };
 
-  // Cleanup on unmount
   useEffect(() => {
-    return () => {
-      stopPolling();
+    const fetchHealth = async () => {
+      try {
+        const health = await videoService.healthCheck();
+        setCudaAvailable(Boolean(health.cuda_available));
+        setUseGpu(Boolean(health.cuda_available));
+      } catch (err) { setCudaAvailable(false); }
     };
+    fetchHealth();
   }, []);
 
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-[#0a0d1a] via-[#141625] to-[#0f1117] relative overflow-hidden">
-      {/* Animated Background Elements */}
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute top-0 left-1/4 w-[500px] h-[500px] bg-purple-600/15 rounded-full blur-3xl animate-pulse"></div>
-        <div className="absolute bottom-0 right-1/4 w-[500px] h-[500px] bg-pink-600/15 rounded-full blur-3xl animate-pulse delay-1000"></div>
-        <div className="absolute top-1/2 left-1/2 w-[500px] h-[500px] bg-indigo-600/10 rounded-full blur-3xl animate-pulse delay-2000"></div>
-        {/* Grid overlay for depth */}
-        <div className="absolute inset-0 bg-[linear-gradient(rgba(139,92,246,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(139,92,246,0.03)_1px,transparent_1px)] bg-[size:100px_100px] [mask-image:radial-gradient(ellipse_80%_50%_at_50%_50%,#000_70%,transparent_100%)]"></div>
-      </div>
+  useEffect(() => {
+    if (!useGpu || !cudaAvailable) setUseFp16(false);
+  }, [useGpu, cudaAvailable]);
 
-      {/* Header */}
-      <header className="relative bg-gradient-to-r from-slate-950 via-slate-900 to-slate-950 backdrop-blur-xl border-b-2 border-purple-500/30 sticky top-0 z-50 shadow-2xl">
-        <div className="container mx-auto px-6 py-6">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-5">
-              <div className="relative group">
-                <div className="absolute inset-0 bg-gradient-to-br from-purple-500 via-pink-500 to-indigo-500 rounded-2xl blur-xl opacity-60 group-hover:opacity-90 transition-opacity duration-300"></div>
-                <div className="relative p-4 bg-gradient-to-br from-purple-600 via-pink-600 to-indigo-600 rounded-2xl shadow-2xl transform hover:scale-110 transition-all duration-300">
-                  <Video className="w-8 h-8 text-white" />
-                </div>
-              </div>
-              <div>
-                <h1 className="text-5xl font-black bg-gradient-to-r from-purple-400 via-pink-400 to-indigo-400 bg-clip-text text-transparent tracking-tight leading-none">
-                  Video Dehazing
-                </h1>
-                <p className="text-base text-purple-300/90 font-semibold flex items-center gap-2 mt-1.5">
-                  <Sparkles className="w-4 h-4" />
-                  Deep Learning Powered
-                </p>
-              </div>
+  useEffect(() => () => stopPolling(), []);
+  useEffect(() => () => {
+    if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+  }, []);
+
+  // UI Components
+  const ProgressBar = ({ progress, color = 'bg-cyan-400' }) => (
+    <div className="h-2 bg-slate-900 rounded-full overflow-hidden w-full relative border border-slate-700">
+      <div
+        className={`h-full ${color} transition-all duration-300 relative`}
+        style={{ width: `${progress}%` }}
+      >
+        <div className="absolute inset-0 bg-white/30 animate-pulse"></div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-200 font-sans selection:bg-cyan-500/30 overflow-x-hidden">
+
+      {/* Navbar */}
+      <nav className="sticky top-0 z-50 bg-slate-900/80 backdrop-blur-md border-b border-slate-800">
+        <div className="container mx-auto px-6 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center shadow-lg shadow-blue-500/20">
+              <Sparkles className="w-5 h-5 text-white fill-current" />
             </div>
-            <div className="hidden md:flex items-center gap-3 px-5 py-2.5 bg-gradient-to-r from-green-500/20 to-emerald-500/20 rounded-full border-2 border-green-500/40 backdrop-blur-sm shadow-lg">
-              <div className="w-3 h-3 bg-green-400 rounded-full animate-pulse shadow-lg shadow-green-400/70"></div>
-              <span className="text-sm font-bold text-green-300 uppercase tracking-wide">System Ready</span>
-            </div>
+            <span className="text-xl font-bold tracking-tight text-white">
+              VideoDehaze<span className="text-cyan-400">AI</span>
+            </span>
+          </div>
+
+          <div className="hidden md:flex items-center gap-8 text-sm font-medium text-slate-400">
+            <button className="hover:text-white transition-colors">Dashboard</button>
+            <button className="hover:text-white transition-colors">History</button>
+            <button className="hover:text-white transition-colors" onClick={() => setShowHelp(true)}>Help</button>
+          </div>
+
+          <div className="flex items-center gap-4">
+            <button
+              onClick={() => setShowSettings(!showSettings)}
+              className={`p-2 rounded-full hover:bg-slate-800 transition-colors ${showSettings ? 'text-cyan-400 bg-slate-800' : 'text-slate-400'}`}
+            >
+              <Settings className="w-5 h-5" />
+            </button>
+            <div className="w-8 h-8 rounded-full bg-slate-800 border border-slate-700"></div>
           </div>
         </div>
-      </header>
+      </nav>
 
-      <main className="relative container mx-auto px-4 md:px-6 py-10">
-        {/* Error Alert */}
+      {/* Main Content Area */}
+      <main className="container mx-auto px-4 py-8 max-w-6xl min-h-[calc(100vh-64px)] flex flex-col items-center justify-center relative">
+
+        {/* Background Gradients */}
+        <div className="absolute top-0 left-1/4 w-96 h-96 bg-blue-600/10 rounded-full blur-[100px] pointer-events-none"></div>
+        <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-cyan-500/10 rounded-full blur-[100px] pointer-events-none"></div>
+
+        {/* Error Toast */}
         {error && (
-          <div className="mb-8 p-5 bg-gradient-to-r from-red-900/50 to-rose-900/50 border-2 border-red-500/50 rounded-2xl flex items-start gap-4 animate-slideIn shadow-2xl backdrop-blur-sm">
-            <div className="p-2 bg-red-500/20 rounded-xl">
-              <AlertCircle className="w-6 h-6 text-red-400" />
-            </div>
-            <div className="flex-1">
-              <p className="font-bold text-red-200 text-lg mb-1">Oops! Something went wrong</p>
-              <p className="text-red-300/90 text-sm">{error}</p>
-            </div>
-          </div>
-        )}
-
-        {/* Upload Section */}
-        {!jobId && (
-          <div className="mb-10 animate-slideIn">
-            <div className="relative bg-gradient-to-br from-slate-900/80 via-slate-900/70 to-slate-800/80 backdrop-blur-2xl border-2 border-purple-500/40 rounded-3xl p-12 shadow-2xl overflow-hidden hover:border-purple-500/60 transition-all duration-500">
-              {/* Decorative gradient overlay */}
-              <div className="absolute top-0 right-0 w-80 h-80 bg-gradient-to-br from-purple-500/20 to-pink-500/20 rounded-full blur-3xl -mr-40 -mt-40"></div>
-              <div className="absolute bottom-0 left-0 w-80 h-80 bg-gradient-to-tr from-indigo-500/15 to-purple-500/15 rounded-full blur-3xl -ml-40 -mb-40"></div>
-
-              <div className="relative">
-                <h2 className="text-3xl font-black mb-8 text-white flex items-center gap-4">
-                  <div className="p-3 bg-gradient-to-br from-purple-600 to-pink-600 rounded-2xl shadow-xl">
-                    <FileVideo className="w-7 h-7 text-white" />
-                  </div>
-                  <span className="bg-gradient-to-r from-purple-200 via-pink-200 to-indigo-200 bg-clip-text text-transparent">
-                    Video Upload Area
-                  </span>
-                </h2>
-
-                <div className="border-3 border-dashed border-purple-400/50 rounded-2xl p-20 text-center hover:border-purple-400/80 hover:bg-gradient-to-br hover:from-purple-500/10 hover:to-pink-500/10 transition-all duration-500 group cursor-pointer backdrop-blur-sm bg-slate-900/30">
-                  <input
-                    type="file"
-                    accept="video/mp4,video/avi,video/quicktime,video/x-matroska"
-                    onChange={handleFileSelect}
-                    className="hidden"
-                    id="file-upload"
-                    disabled={uploading}
-                  />
-                  <label
-                    htmlFor="file-upload"
-                    className="cursor-pointer flex flex-col items-center gap-6"
-                  >
-                    <div className="relative">
-                      <div className="absolute inset-0 bg-gradient-to-br from-purple-500 via-pink-500 to-indigo-500 rounded-full blur-2xl opacity-40 group-hover:opacity-70 transition-opacity duration-500"></div>
-                      <div className="relative p-8 bg-gradient-to-br from-purple-600 via-pink-600 to-indigo-600 rounded-full shadow-2xl transform group-hover:scale-110 transition-all duration-500">
-                        <Upload className="w-16 h-16 text-white" />
-                      </div>
-                    </div>
-                    <div>
-                      <p className="text-2xl font-black text-white mb-3">
-                        {selectedFile ? (
-                          <span className="flex items-center gap-3 justify-center">
-                            <Video className="w-6 h-6 text-purple-400" />
-                            {selectedFile.name}
-                          </span>
-                        ) : (
-                          'Drag & Drop or Click to Upload'
-                        )}
-                      </p>
-                      <p className="text-base text-purple-300/80 font-semibold">
-                        Supported: MP4, AVI, MOV, MKV • Max Size: 500MB
-                      </p>
-                    </div>
-                  </label>
-                </div>
-
-                {selectedFile && (
-                  <div className="mt-10 animate-slideIn">
-                    <button
-                      onClick={handleUpload}
-                      disabled={uploading}
-                      className="w-full bg-gradient-to-r from-purple-600 via-pink-600 to-indigo-600 hover:from-purple-700 hover:via-pink-700 hover:to-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-black py-6 px-10 rounded-2xl flex items-center justify-center gap-4 transition-all duration-300 shadow-2xl hover:shadow-purple-500/60 transform hover:scale-[1.02] active:scale-[0.98] text-xl"
-                    >
-                      {uploading ? (
-                        <>
-                          <Loader className="w-7 h-7 animate-spin" />
-                          <span>Uploading... {uploadProgress}%</span>
-                        </>
-                      ) : (
-                        <>
-                          <Upload className="w-7 h-7" />
-                          <span>Upload & Continue</span>
-                          <ArrowRight className="w-6 h-6" />
-                        </>
-                      )}
-                    </button>
-
-                    {uploadProgress > 0 && uploadProgress < 100 && (
-                      <div className="mt-8">
-                        <div className="h-4 bg-slate-950/80 rounded-full overflow-hidden shadow-inner border-2 border-slate-800">
-                          <div
-                            className="h-full bg-gradient-to-r from-purple-500 via-pink-500 to-indigo-500 transition-all duration-300 rounded-full shadow-lg relative overflow-hidden"
-                            style={{ width: `${uploadProgress}%` }}
-                          >
-                            <div className="absolute inset-0 bg-white/20 animate-pulse"></div>
-                          </div>
-                        </div>
-                        <p className="text-center text-purple-300 text-base font-bold mt-3 flex items-center justify-center gap-2">
-                          <Loader className="w-4 h-4 animate-spin" />
-                          {uploadProgress}% Complete
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                )}
+          <div className="fixed top-20 right-6 z-50 animate-[slideIn_0.3s_ease-out]">
+            <div className="bg-red-500/10 border border-red-500/50 text-red-200 px-4 py-3 rounded-lg backdrop-blur-md shadow-lg flex items-start gap-3 max-w-md">
+              <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
+              <div>
+                <h4 className="font-semibold text-sm">Error Occurred</h4>
+                <p className="text-sm opacity-90">{error}</p>
               </div>
+              <button onClick={() => setError(null)} className="ml-auto hover:text-white"><X className="w-4 h-4" /></button>
             </div>
           </div>
         )}
 
-        {/* Processing Section */}
-        {jobId && !status?.output_video_path && (
-          <div className="mb-10 animate-slideIn">
-            <div className="relative bg-gradient-to-br from-slate-900/80 via-slate-900/70 to-slate-800/80 backdrop-blur-2xl border-2 border-indigo-500/40 rounded-3xl p-12 shadow-2xl overflow-hidden hover:border-indigo-500/60 transition-all duration-500">
-              <div className="absolute top-0 left-0 w-80 h-80 bg-gradient-to-br from-indigo-500/20 to-purple-500/20 rounded-full blur-3xl -ml-40 -mt-40"></div>
+        {/* Settings Modal (Overlay) */}
+        {showSettings && (
+          <div className="absolute top-4 right-4 z-40 w-80 bg-slate-900/95 backdrop-blur-xl border border-slate-700 rounded-2xl shadow-2xl p-6 animate-[scaleIn_0.2s_ease-out]">
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                <Settings className="w-5 h-5 text-cyan-400" /> Configuration
+              </h3>
+              <button onClick={() => setShowSettings(false)} className="text-slate-400 hover:text-white"><X className="w-4 h-4" /></button>
+            </div>
 
-              <div className="relative">
-                <div className="flex items-center justify-between mb-10">
-                  <h2 className="text-3xl font-black text-white flex items-center gap-4">
-                    <div className="p-3 bg-gradient-to-br from-indigo-600 to-purple-600 rounded-2xl shadow-xl">
-                      <Settings className="w-7 h-7 text-white" />
-                    </div>
-                    <span className="bg-gradient-to-r from-indigo-200 via-purple-200 to-pink-200 bg-clip-text text-transparent">
-                      Processing Settings Panel
-                    </span>
-                  </h2>
-                  <button
-                    onClick={() => setShowSettings(!showSettings)}
+            <div className="space-y-6">
+              <div>
+                <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 block">Model Depth</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {['8', '16'].map((l) => (
+                    <button
+                      key={l}
+                      onClick={() => !processing && setModelLayers(l)}
+                      className={`py-2 px-3 rounded-lg text-sm font-medium border transition-all ${modelLayers === l
+                        ? 'bg-cyan-500/10 border-cyan-500/50 text-cyan-300 shadow-[0_0_15px_rgba(6,182,212,0.15)]'
+                        : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-600'}`}
+                    >
+                      {l} Layers
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 block">Resolution: {resolution}px</label>
+                <div className="bg-slate-950 p-3 rounded-lg border border-slate-800">
+                  <input
+                    type="range" min="256" max="1024" step="256"
+                    value={resolution} onChange={(e) => setResolution(Number(e.target.value))}
                     disabled={processing}
-                    className="p-3.5 hover:bg-indigo-500/20 rounded-2xl transition-all border-2 border-indigo-500/40 hover:border-indigo-500/60 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-cyan-400"
+                  />
+                  <div className="flex justify-between text-[10px] text-slate-500 mt-2 font-mono">
+                    <span>256</span><span>512</span><span>768</span><span>1024</span>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 block">Hardware</label>
+                <div className="space-y-2">
+                  <button
+                    onClick={() => cudaAvailable && !processing && setUseGpu(!useGpu)}
+                    className={`w-full flex items-center justify-between p-3 rounded-lg border transition-all ${useGpu
+                      ? 'bg-green-500/10 border-green-500/40 text-green-300'
+                      : 'bg-slate-950 border-slate-800 text-slate-400'}`}
                   >
-                    <Settings className={`w-7 h-7 text-indigo-400 transition-transform duration-500 ${showSettings ? 'rotate-180' : ''}`} />
+                    <span className="flex items-center gap-2 text-sm"><Zap className="w-4 h-4" /> GPU Acceleration</span>
+                    <div className={`w-2 h-2 rounded-full ${cudaAvailable ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                  </button>
+                  <button
+                    onClick={() => useGpu && !processing && setUseFp16(!useFp16)}
+                    disabled={!useGpu}
+                    className={`w-full flex items-center justify-between p-3 rounded-lg border transition-all ${useFp16
+                      ? 'bg-blue-500/10 border-blue-500/40 text-blue-300'
+                      : 'bg-slate-950 border-slate-800 text-slate-500'}`}
+                  >
+                    <span className="flex items-center gap-2 text-sm"><Activity className="w-4 h-4" /> FP16 Precision</span>
                   </button>
                 </div>
-
-                {/* Settings Panel */}
-                {showSettings && (
-                  <div className="mb-10 p-10 bg-gradient-to-br from-slate-950/80 to-slate-900/80 rounded-3xl border-2 border-indigo-500/30 space-y-8 backdrop-blur-sm shadow-2xl animate-slideIn">
-                    <div>
-                      <label className="block text-base font-black text-indigo-200 mb-4 uppercase tracking-wide flex items-center gap-2">
-                        <Zap className="w-5 h-5" />
-                        Model Selection
-                      </label>
-                      <select
-                        value={modelLayers}
-                        onChange={(e) => setModelLayers(e.target.value)}
-                        disabled={processing}
-                        className="w-full bg-slate-900/90 border-2 border-indigo-500/40 rounded-2xl px-6 py-4 text-white font-bold text-lg hover:border-indigo-500/60 focus:border-indigo-500 focus:outline-none transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        <option value="8">⚖️ 8 Layers - Balanced Quality (Recommended)</option>
-                        <option value="16">✨ 16 Layers - Premium Quality</option>
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="block text-base font-black text-indigo-200 mb-4 uppercase tracking-wide flex items-center justify-between">
-                        <span className="flex items-center gap-2">
-                          <Gauge className="w-5 h-5" />
-                          Resolution Selector
-                        </span>
-                        <span className="text-2xl font-black text-indigo-400">{resolution}×{resolution}</span>
-                      </label>
-                      <input
-                        type="range"
-                        min="256"
-                        max="1024"
-                        step="256"
-                        value={resolution}
-                        onChange={(e) => setResolution(Number(e.target.value))}
-                        disabled={processing}
-                        className="w-full h-4 accent-indigo-500 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                      />
-                      <div className="flex justify-between text-sm text-indigo-300/80 font-bold mt-3">
-                        <span>256px</span>
-                        <span>512px</span>
-                        <span>768px</span>
-                        <span>1024px</span>
-                      </div>
-                    </div>
-
-                    <div className="pt-6 border-t-2 border-indigo-500/30">
-                      <label className="flex items-center gap-5 cursor-pointer p-6 bg-slate-900/60 rounded-2xl hover:bg-slate-900/80 transition-all border-2 border-indigo-500/30 hover:border-indigo-500/50">
-                        <input
-                          type="checkbox"
-                          checked={useFp16}
-                          onChange={(e) => setUseFp16(e.target.checked)}
-                          disabled={processing}
-                          className="w-6 h-6 accent-indigo-500 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                        />
-                        <div className="flex-1">
-                          <span className="text-lg font-black text-indigo-200 block">
-                            FP16 GPU Acceleration Toggle
-                          </span>
-                          <span className="text-sm text-indigo-300/70 font-semibold mt-1 block">
-                            Enables half-precision for 2x faster processing (GPU required) 🚀
-                          </span>
-                        </div>
-                      </label>
-                    </div>
-                  </div>
-                )}
-
-                <button
-                  onClick={handleProcess}
-                  disabled={processing}
-                  className="w-full bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 hover:from-indigo-700 hover:via-purple-700 hover:to-pink-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-black py-6 px-10 rounded-2xl flex items-center justify-center gap-4 transition-all duration-300 shadow-2xl hover:shadow-indigo-500/60 transform hover:scale-[1.02] active:scale-[0.98] text-xl"
-                >
-                  {processing ? (
-                    <>
-                      <Loader className="w-7 h-7 animate-spin" />
-                      <span>Processing Video...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Play className="w-7 h-7" />
-                      <span>Start Dehazing Process</span>
-                      <Sparkles className="w-6 h-6" />
-                    </>
-                  )}
-                </button>
               </div>
             </div>
           </div>
         )}
 
-        {/* Progress */}
-        {processing && status && (
-          <div className="mb-10 animate-slideIn">
-            <div className="relative bg-gradient-to-br from-slate-900/80 via-slate-900/70 to-slate-800/80 backdrop-blur-2xl border-2 border-pink-500/40 rounded-3xl p-12 shadow-2xl overflow-hidden">
-              <div className="absolute bottom-0 right-0 w-80 h-80 bg-gradient-to-tl from-pink-500/20 to-purple-500/20 rounded-full blur-3xl -mr-40 -mb-40"></div>
+        {/* --- STATE 1: IDLE / HERO --- */}
+        {!selectedFile && !jobId && !status?.output_video_path && (
+          <div className="w-full max-w-4xl animate-[fadeIn_0.5s_ease-out] flex flex-col items-center text-center">
 
-              <div className="relative">
-                <h2 className="text-3xl font-black mb-10 text-white flex items-center gap-4">
-                  <div className="p-3 bg-gradient-to-br from-pink-600 to-purple-600 rounded-2xl shadow-xl">
-                    <Loader className="w-7 h-7 text-white animate-spin" />
-                  </div>
-                  <span className="bg-gradient-to-r from-pink-200 via-purple-200 to-indigo-200 bg-clip-text text-transparent">
-                    Real-time Progress Tracking
-                  </span>
-                </h2>
+            <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-slate-900/50 border border-slate-800 text-xs font-medium text-cyan-400 mb-8 backdrop-blur-sm shadow-sm">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-500"></span>
+              </span>
+              v2.0 Now Available with 16-Layer Models
+            </div>
 
-                {/* Live Frame Preview */}
-                {livePreview.original && livePreview.dehazed && (
-                  <div className="mb-10 p-8 bg-gradient-to-br from-slate-950/80 to-slate-900/80 rounded-3xl border-2 border-pink-500/30 backdrop-blur-sm shadow-2xl">
-                    <h3 className="text-base font-black text-pink-300 mb-6 uppercase tracking-wider flex items-center gap-3">
-                      <Film className="w-5 h-5" />
-                      Preview Area - Before & After Comparison
-                    </h3>
-                    <div className="grid md:grid-cols-2 gap-8">
-                      <div className="relative overflow-hidden rounded-2xl bg-black shadow-2xl border-2 border-purple-500/40 group">
-                        <img
-                          src={`data:image/jpeg;base64,${livePreview.original}`}
-                          alt="Original frame"
-                          className="w-full h-auto transform group-hover:scale-105 transition-transform duration-500"
-                        />
-                        <div className="absolute top-4 left-4 px-5 py-2.5 bg-gradient-to-r from-purple-600/95 to-pink-600/95 backdrop-blur-md rounded-2xl text-sm font-black text-white border-2 border-purple-400/60 shadow-xl">
-                          Input (Hazy)
-                        </div>
-                        <div className="absolute bottom-4 right-4 px-5 py-2.5 bg-blue-600/95 backdrop-blur-md rounded-2xl text-sm font-black text-white shadow-xl">
-                          {liveFps.toFixed(1)} FPS
-                        </div>
-                      </div>
-                      <div className="relative overflow-hidden rounded-2xl bg-black shadow-2xl border-2 border-green-500/40 group">
-                        <img
-                          src={`data:image/jpeg;base64,${livePreview.dehazed}`}
-                          alt="Dehazed frame"
-                          className="w-full h-auto transform group-hover:scale-105 transition-transform duration-500"
-                        />
-                        <div className="absolute top-4 left-4 px-5 py-2.5 bg-gradient-to-r from-green-600/95 to-emerald-600/95 backdrop-blur-md rounded-2xl text-sm font-black text-white border-2 border-green-400/60 shadow-xl">
-                          Output (Clear)
-                        </div>
-                        <div className="absolute bottom-4 right-4 px-5 py-2.5 bg-green-600/95 backdrop-blur-md rounded-2xl text-sm font-black text-white shadow-xl flex items-center gap-2">
-                          <CheckCircle className="w-4 h-4" />
-                          Enhanced
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )}
+            <h1 className="text-5xl md:text-7xl font-bold text-white mb-6 leading-tight tracking-tight">
+              Enhance Your Videos <br /> with <span className="bg-gradient-to-r from-cyan-400 to-blue-500 bg-clip-text text-transparent">AI Dehazing</span>
+            </h1>
 
-                <div className="space-y-10">
-                  {/* Animated Horizontal Progress Bar */}
-                  <div className="p-8 bg-gradient-to-br from-slate-950/80 to-slate-900/80 rounded-3xl border-2 border-pink-500/30 shadow-xl">
-                    <div className="flex justify-between items-center mb-6">
-                      <span className="text-pink-300 font-black text-xl flex items-center gap-3">
-                        <Zap className="w-6 h-6" />
-                        Overall Progress
-                      </span>
-                      <span className="text-pink-400 font-black text-3xl">
-                        {(status.progress || 0).toFixed(1)}%
-                      </span>
+            <p className="text-lg text-slate-400 mb-12 max-w-2xl leading-relaxed">
+              Professional-grade video restoration powered by deep learning. Remove haze, fog, and smoke in real-time with our advanced neural networks.
+            </p>
+
+            {/* Upload Area */}
+            <div className="w-full max-w-2xl relative group">
+              <div className="absolute -inset-1 bg-gradient-to-r from-cyan-500 to-blue-600 rounded-2xl blur opacity-20 group-hover:opacity-40 transition duration-500"></div>
+              <div className="relative bg-slate-950 border border-slate-800 rounded-xl p-8 md:p-12 hover:border-cyan-500/50 transition-colors duration-300">
+                
+                {!uploading && !jobId ? (
+                  // Show upload button when no file is being uploaded
+                  <label className="flex flex-col items-center gap-6 cursor-pointer">
+                    <input
+                      type="file"
+                      accept="video/*"
+                      onChange={handleFileSelect}
+                      className="hidden"
+                      disabled={uploading}
+                    />
+                    <div className="w-20 h-20 bg-slate-900 rounded-full flex items-center justify-center group-hover:scale-110 transition-transform duration-300 shadow-inner border border-slate-800">
+                      <UploadCloud className="w-10 h-10 text-cyan-400" />
                     </div>
-                    <div className="h-5 bg-slate-950/90 rounded-full overflow-hidden shadow-inner border-2 border-slate-800">
-                      <div
-                        className="h-full bg-gradient-to-r from-pink-500 via-purple-500 to-indigo-500 transition-all duration-300 rounded-full shadow-xl relative overflow-hidden"
-                        style={{ width: `${status.progress || 0}%` }}
-                      >
-                        {/* Animated shimmer effect */}
-                        <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent animate-pulse"></div>
+                    <div className="text-center">
+                      <h3 className="text-xl font-semibold text-white mb-2">Click to Select Video</h3>
+                      <p className="text-slate-400 text-sm">MP4, AVI, MKV up to 500MB</p>
+                      <p className="text-cyan-400 text-xs mt-2 font-medium">Upload starts when you click Upload</p>
+                    </div>
+                  </label>
+                ) : uploading ? (
+                  // Show progress during upload
+                  <div className="flex flex-col items-center gap-6 animate-[fadeIn_0.3s]">
+                    <div className="w-20 h-20 bg-slate-900 rounded-full flex items-center justify-center border border-cyan-500/30">
+                      <Loader className="w-10 h-10 text-cyan-400 animate-spin" />
+                    </div>
+                    <div className="text-center w-full">
+                      <h3 className="text-lg font-semibold text-white mb-2">Uploading...</h3>
+                      {selectedFile && <p className="text-slate-400 text-sm mb-4">{selectedFile.name}</p>}
+                      <div className="w-full max-w-sm mx-auto">
+                        <div className="flex justify-between text-sm text-slate-400 mb-2">
+                          <span>Progress</span>
+                          <span className="text-cyan-400 font-semibold">{uploadProgress}%</span>
+                        </div>
+                        <ProgressBar progress={uploadProgress} color="bg-cyan-400" />
                       </div>
-                    </div>
-                    {/* Current Processing Stage */}
-                    <div className="mt-6 flex items-center justify-center gap-3 text-pink-200">
-                      <div className="w-2.5 h-2.5 bg-pink-400 rounded-full animate-pulse shadow-lg shadow-pink-400/70"></div>
-                      <span className="text-base font-bold">
-                        {status.current_frame > 0 && status.current_frame < (status.total_frames || 0)
-                          ? `Processing frames... (${status.current_frame}/${status.total_frames})`
-                          : status.progress === 0
-                          ? 'Loading model...'
-                          : status.progress === 100
-                          ? 'Reconstructing video...'
-                          : 'Processing frames...'}
-                      </span>
                     </div>
                   </div>
+                ) : null}
+              </div>
+            </div>
 
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
-                    <div className="p-6 bg-gradient-to-br from-slate-900/90 to-slate-800/90 rounded-2xl border-2 border-purple-500/30 hover:border-purple-500/50 transition-all shadow-xl hover:shadow-purple-500/30">
-                      <div className="flex items-center gap-2 mb-3">
-                        <Film className="w-5 h-5 text-purple-400" />
-                        <p className="text-purple-300 text-xs font-black uppercase tracking-wide">Frames</p>
-                      </div>
-                      <p className="text-white font-black text-3xl mt-2">
-                        {status.current_frame || 0} <span className="text-purple-400/60 text-xl">/ {status.total_frames || 0}</span>
-                      </p>
-                    </div>
-                    <div className="p-6 bg-gradient-to-br from-slate-900/90 to-slate-800/90 rounded-2xl border-2 border-pink-500/30 hover:border-pink-500/50 transition-all shadow-xl hover:shadow-pink-500/30">
-                      <div className="flex items-center gap-2 mb-3">
-                        <Gauge className="w-5 h-5 text-pink-400" />
-                        <p className="text-pink-300 text-xs font-black uppercase tracking-wide">Speed</p>
-                      </div>
-                      <p className="text-white font-black text-3xl mt-2">
-                        {(status.fps || 0).toFixed(1)} <span className="text-pink-400/60 text-base">FPS</span>
-                      </p>
-                    </div>
-                    <div className="p-6 bg-gradient-to-br from-slate-900/90 to-slate-800/90 rounded-2xl border-2 border-indigo-500/30 hover:border-indigo-500/50 transition-all shadow-xl hover:shadow-indigo-500/30">
-                      <div className="flex items-center gap-2 mb-3">
-                        <Clock className="w-5 h-5 text-indigo-400" />
-                        <p className="text-indigo-300 text-xs font-black uppercase tracking-wide">Elapsed</p>
-                      </div>
-                      <p className="text-white font-black text-3xl mt-2">
-                        {Math.floor(status.elapsed_time || 0)}<span className="text-indigo-400/60 text-base">s</span>
-                      </p>
-                    </div>
-                    <div className="p-6 bg-gradient-to-br from-slate-900/90 to-slate-800/90 rounded-2xl border-2 border-cyan-500/30 hover:border-cyan-500/50 transition-all shadow-xl hover:shadow-cyan-500/30">
-                      <div className="flex items-center gap-2 mb-3">
-                        <Clock className="w-5 h-5 text-cyan-400" />
-                        <p className="text-cyan-300 text-xs font-black uppercase tracking-wide">Remaining</p>
-                      </div>
-                      <p className="text-white font-black text-3xl mt-2">
-                        ~{Math.floor(status.estimated_remaining || 0)}<span className="text-cyan-400/60 text-base">s</span>
-                      </p>
-                    </div>
-                  </div>
+            {/* Features Grid */}
+            <div className="grid md:grid-cols-4 gap-6 mt-20 text-left w-full max-w-5xl">
+              {[
+                { icon: Zap, title: "Real-Time", desc: "Instant processing with GPU support" },
+                { icon: Layers, title: "Deep Learning", desc: "Advanced 16-layer U-Net architecture" },
+                { icon: Shield, title: "Secure", desc: "Enterprise-grade data protection" },
+                { icon: Activity, title: "High Quality", desc: "Support for 1080p+ restoration" },
+              ].map((f, i) => (
+                <div key={i} className="p-6 rounded-xl bg-slate-900/40 border border-slate-800 hover:bg-slate-900/60 transition-colors">
+                  <f.icon className="w-8 h-8 text-cyan-400 mb-4" />
+                  <h3 className="text-white font-semibold mb-2">{f.title}</h3>
+                  <p className="text-sm text-slate-400">{f.desc}</p>
                 </div>
-              </div>
+              ))}
             </div>
           </div>
         )}
 
-        {/* Results - Side by Side Comparison */}
-        {status?.output_video_path && (
-          <div className="mb-10 animate-slideIn">
-            <div className="relative bg-gradient-to-br from-slate-900/80 via-slate-900/70 to-slate-800/80 backdrop-blur-2xl border-2 border-green-500/40 rounded-3xl p-12 shadow-2xl overflow-hidden">
-              <div className="absolute top-0 left-0 w-80 h-80 bg-gradient-to-br from-green-500/20 to-emerald-500/20 rounded-full blur-3xl -ml-40 -mt-40"></div>
+        {/* --- STATE 2: CONFIGURATION & PROCESSING --- */}
+        {(selectedFile || jobId) && !status?.output_video_path && (
+          <div className="w-full max-w-5xl animate-[scaleIn_0.3s_ease-out]">
+            <div className="header mb-8 flex items-center justify-between">
+              <h2 className="text-2xl font-bold text-white flex items-center gap-3">
+                {processing ? <Loader className="w-6 h-6 animate-spin text-cyan-400" /> : <Settings className="w-6 h-6 text-cyan-400" />}
+                {processing ? 'Processing Video...' : 'Project Workspace'}
+              </h2>
+              <button
+                onClick={handleReset}
+                className="text-slate-400 hover:text-red-400 text-sm flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-red-500/10 transition-colors"
+                disabled={processing}
+              >
+                <Trash2 className="w-4 h-4" /> Cancel Project
+              </button>
+            </div>
 
-              <div className="relative">
-                <div className="flex items-center justify-between mb-12 flex-wrap gap-6">
-                  <h2 className="text-4xl font-black text-white flex items-center gap-4">
-                    <div className="p-3 bg-gradient-to-br from-green-600 to-emerald-600 rounded-2xl shadow-xl">
-                      <CheckCircle className="w-8 h-8 text-white" />
+            <div className="grid lg:grid-cols-3 gap-8 h-full">
+              {/* Left Panel: Preview & Status */}
+              <div className="lg:col-span-2 space-y-6">
+
+                {/* Visualizer / Preview Box */}
+                <div className="aspect-video bg-black rounded-2xl border border-slate-800 overflow-hidden relative shadow-2xl">
+                  {processing && livePreview.original && livePreview.dehazed ? (
+                    <div className="grid grid-cols-2 h-full">
+                      <div className="relative border-r border-cyan-500/20">
+                        <img src={`data:image/jpeg;base64,${livePreview.original}`} className="w-full h-full object-cover" />
+                        <span className="absolute top-4 left-4 text-xs font-bold text-white bg-black/50 px-2 py-1 rounded backdrop-blur border border-white/10">INPUT</span>
+                      </div>
+                      <div className="relative">
+                        <img src={`data:image/jpeg;base64,${livePreview.dehazed}`} className="w-full h-full object-cover" />
+                        <span className="absolute top-4 right-4 text-xs font-bold text-white bg-cyan-600/80 px-2 py-1 rounded backdrop-blur border border-cyan-400/30">AI OUTPUT</span>
+                      </div>
                     </div>
-                    <span className="bg-gradient-to-r from-green-200 via-emerald-200 to-teal-200 bg-clip-text text-transparent">
-                      Completion State - Success!
-                    </span>
-                  </h2>
-                  <div className="flex gap-4">
+                  ) : showReview && selectedFile ? (
+                    <div className="relative w-full h-full">
+                      <video
+                        ref={originalVideoRef}
+                        controls
+                        className="w-full h-full object-cover bg-black"
+                      />
+                      <span className="absolute top-4 left-4 text-xs font-bold text-white bg-black/50 px-2 py-1 rounded backdrop-blur border border-white/10">REVIEW</span>
+                    </div>
+                  ) : (
+                    <div className="w-full h-full flex flex-col items-center justify-center bg-slate-950/50">
+                      {processing ? (
+                        <div className="text-center">
+                          <Loader className="w-12 h-12 text-cyan-400 animate-spin mx-auto mb-4" />
+                          <p className="text-cyan-400 font-medium animate-pulse">Initializing neural network...</p>
+                        </div>
+                      ) : (
+                        <div className="text-center text-slate-500">
+                          <Video className="w-16 h-16 mx-auto mb-4 opacity-50" />
+                          <p>Select a file and click Review to preview</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Progress Bar & Stats */}
+                {processing && (
+                  <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-6 backdrop-blur">
+                    <div className="flex justify-between text-sm font-medium mb-2">
+                      <span className="text-cyan-400">{stageText}</span>
+                      <span className="text-white">{status?.progress?.toFixed(1)}%</span>
+                    </div>
+                    <ProgressBar progress={status?.progress || 0} />
+
+                    <div className="grid grid-cols-4 gap-4 mt-6 text-center">
+                      {[
+                        { label: 'FPS', val: liveStats.fps.toFixed(1) },
+                        { label: 'Frames', val: `${liveStats.framesProcessed}/${liveStats.totalFrames}` },
+                        { label: 'Time', val: `${Math.floor(liveStats.elapsed)}s` },
+                        { label: 'Left', val: `~${Math.floor(liveStats.remaining)}s` }
+                      ].map((s, i) => (
+                        <div key={i} className="bg-slate-950/50 rounded-lg p-3 border border-slate-800">
+                          <p className="text-xs text-slate-400 uppercase tracking-wider mb-1">{s.label}</p>
+                          <p className="text-lg font-bold text-white font-mono">{s.val}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Right Panel: Controls */}
+              <div className="bg-slate-900/40 border border-slate-800 rounded-2xl p-6 h-fit backdrop-blur">
+                <h3 className="text-white font-semibold mb-6 flex items-center gap-2">
+                  <Settings className="w-4 h-4 text-cyan-400" /> Controls
+                </h3>
+
+                <div className="space-y-6">
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      onClick={handleUpload}
+                      disabled={!canUpload}
+                      className={`py-3 rounded-lg font-semibold flex items-center justify-center gap-2 transition-all ${canUpload
+                        ? 'bg-cyan-600 hover:bg-cyan-500 text-white'
+                        : 'bg-slate-800 text-slate-500 cursor-not-allowed'}`}
+                    >
+                      <Upload className="w-4 h-4" /> Upload
+                    </button>
+                    <button
+                      onClick={handleReview}
+                      disabled={!canReview}
+                      className={`py-3 rounded-lg font-semibold flex items-center justify-center gap-2 transition-all ${canReview
+                        ? 'bg-slate-800 hover:bg-slate-700 text-slate-200'
+                        : 'bg-slate-800 text-slate-500 cursor-not-allowed'}`}
+                    >
+                      <Video className="w-4 h-4" /> Review
+                    </button>
+                    <button
+                      onClick={handleProcess}
+                      disabled={!canStart || processing}
+                      className={`py-3 rounded-lg font-semibold flex items-center justify-center gap-2 transition-all col-span-2 ${(!canStart || processing)
+                        ? 'bg-slate-800 text-slate-500 cursor-not-allowed'
+                        : 'bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-500 hover:to-cyan-500 text-white'}`}
+                    >
+                      {processing ? <Loader className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4 fill-white" />}
+                      {processing ? 'Dehazing...' : 'Start Dehazing'}
+                    </button>
                     <button
                       onClick={handleDownload}
-                      className="bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white font-black py-4 px-8 rounded-2xl flex items-center gap-3 transition-all shadow-2xl hover:shadow-green-500/60 transform hover:scale-105 active:scale-95 text-lg"
+                      disabled={!canDownload}
+                      className={`py-3 rounded-lg font-semibold flex items-center justify-center gap-2 transition-all col-span-2 ${canDownload
+                        ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                        : 'bg-slate-800 text-slate-500 cursor-not-allowed'}`}
                     >
-                      <Download className="w-6 h-6" />
-                      Download Dehazed Video
-                    </button>
-                    <button
-                      onClick={handleReset}
-                      className="bg-slate-800 hover:bg-slate-700 text-white font-black py-4 px-8 rounded-2xl flex items-center gap-3 transition-all border-2 border-slate-600 hover:border-slate-500 shadow-xl"
-                    >
-                      <Trash2 className="w-6 h-6" />
-                      New Video
+                      <Download className="w-4 h-4" /> Download
                     </button>
                   </div>
-                </div>
 
-                {/* Side by Side Video Comparison */}
-                <div className="mb-10 p-3 bg-slate-950/60 rounded-3xl border-2 border-green-500/30 shadow-2xl">
-                  <SplitScreenComparison
-                    originalVideoRef={originalVideoRef}
-                    dehazedVideoRef={dehazedVideoRef}
-                    onPlayPause={handlePlayPause}
-                    onTimeUpdate={handleTimeUpdate}
-                    syncedPlay={syncedPlay}
-                    onSyncToggle={setSyncedPlay}
-                  />
-                </div>
+                  {uploading && (
+                    <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-4">
+                      <div className="flex justify-between text-xs text-slate-400 mb-2">
+                        <span>Upload Progress</span>
+                        <span className="text-cyan-400 font-semibold">{uploadProgress}%</span>
+                      </div>
+                      <ProgressBar progress={uploadProgress} color="bg-cyan-400" />
+                    </div>
+                  )}
 
-                {/* Statistics */}
-                {status.statistics && (
-                  <div className="p-10 bg-gradient-to-br from-slate-950/80 to-slate-900/80 rounded-3xl border-2 border-green-500/30 backdrop-blur-sm shadow-xl">
-                    <h3 className="text-base font-black text-green-300 mb-8 uppercase tracking-wider flex items-center gap-3">
-                      <Gauge className="w-5 h-5" />
-                      Processing Statistics Report
-                    </h3>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
-                      <div className="p-6 bg-gradient-to-br from-slate-900/90 to-slate-800/90 rounded-2xl border-2 border-green-500/30 hover:border-green-500/50 transition-all shadow-xl hover:shadow-green-500/30">
-                        <p className="text-green-300 text-xs font-black uppercase tracking-wide mb-3">Total Frames</p>
-                        <p className="text-white font-black text-3xl">{status.statistics.total_frames}</p>
-                      </div>
-                      <div className="p-6 bg-gradient-to-br from-slate-900/90 to-slate-800/90 rounded-2xl border-2 border-emerald-500/30 hover:border-emerald-500/50 transition-all shadow-xl hover:shadow-emerald-500/30">
-                        <p className="text-emerald-300 text-xs font-black uppercase tracking-wide mb-3">Processing Time</p>
-                        <p className="text-white font-black text-3xl">{status.statistics.total_time_seconds}<span className="text-emerald-400/60 text-base">s</span></p>
-                      </div>
-                      <div className="p-6 bg-gradient-to-br from-slate-900/90 to-slate-800/90 rounded-2xl border-2 border-cyan-500/30 hover:border-cyan-500/50 transition-all shadow-xl hover:shadow-cyan-500/30">
-                        <p className="text-cyan-300 text-xs font-black uppercase tracking-wide mb-3">Average FPS</p>
-                        <p className="text-white font-black text-3xl">{(status.statistics.average_fps).toFixed(2)}</p>
-                      </div>
-                      <div className="p-6 bg-gradient-to-br from-slate-900/90 to-slate-800/90 rounded-2xl border-2 border-purple-500/30 hover:border-purple-500/50 transition-all shadow-xl hover:shadow-purple-500/30">
-                        <p className="text-purple-300 text-xs font-black uppercase tracking-wide mb-3">Avg Inference</p>
-                        <p className="text-white font-black text-3xl">{(status.statistics.average_inference_ms).toFixed(1)}<span className="text-purple-400/60 text-base">ms</span></p>
+                  <div>
+                    <label className="text-xs text-slate-400 uppercase font-bold mb-3 block">Enhancement Model</label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {['4', '8', '16'].map((l) => (
+                        <button
+                          key={l}
+                          onClick={() => !processing && setModelLayers(l)}
+                          className={`py-2 rounded-lg text-sm font-semibold border transition-all ${modelLayers === l
+                            ? 'bg-cyan-500/10 border-cyan-500/50 text-cyan-300'
+                            : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-600'}`}
+                        >
+                          {l} Layers
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-xs text-slate-400 uppercase font-bold mb-3 block">Resolution</label>
+                    <div className="bg-slate-950 rounded-lg p-4 border border-slate-800">
+                      <input
+                        type="range" min="256" max="1024" step="256"
+                        value={resolution} onChange={(e) => setResolution(Number(e.target.value))} disabled={processing}
+                        className="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-cyan-400"
+                      />
+                      <div className="flex justify-between mt-2 text-xs text-slate-400 font-mono">
+                        <span>256p</span><span>{resolution}p</span><span>1024p</span>
                       </div>
                     </div>
                   </div>
-                )}
+
+                  <div>
+                    <label className="text-xs text-slate-400 uppercase font-bold mb-3 block">Device</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        onClick={() => !processing && setUseGpu(false)}
+                        className={`py-2 rounded-lg text-sm font-semibold border transition-all ${!useGpu
+                          ? 'bg-blue-500/10 border-blue-500/50 text-blue-300'
+                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-600'}`}
+                      >
+                        CPU
+                      </button>
+                      <button
+                        onClick={() => cudaAvailable && !processing && setUseGpu(true)}
+                        disabled={!cudaAvailable}
+                        className={`py-2 rounded-lg text-sm font-semibold border transition-all ${useGpu
+                          ? 'bg-green-500/10 border-green-500/50 text-green-300'
+                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-600'} ${!cudaAvailable ? 'cursor-not-allowed opacity-50' : ''}`}
+                      >
+                        GPU
+                      </button>
+                    </div>
+                    {cudaAvailable === false && (
+                      <p className="text-xs text-red-400 mt-2">CUDA not available. GPU disabled.</p>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="text-xs text-slate-400 uppercase font-bold mb-3 block">FP16 Precision</label>
+                    <button
+                      onClick={() => useGpu && !processing && setUseFp16(!useFp16)}
+                      disabled={!useGpu}
+                      className={`w-full py-2 rounded-lg text-sm font-semibold border transition-all ${useFp16
+                        ? 'bg-emerald-500/10 border-emerald-500/50 text-emerald-300'
+                        : 'bg-slate-950 border-slate-800 text-slate-500'} ${!useGpu ? 'cursor-not-allowed opacity-50' : ''}`}
+                    >
+                      {useFp16 ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
         )}
+
+        {/* --- STATE 3: COMPLETED --- */}
+        {status?.output_video_path && (
+          <div className="w-full max-w-6xl animate-[scaleIn_0.3s_ease-out]">
+            <div className="text-center mb-10">
+              <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-green-500/10 border border-green-500/30 text-green-400 mb-4 shadow-[0_0_20px_rgba(34,197,94,0.3)]">
+                <CheckCircle className="w-8 h-8" />
+              </div>
+              <h2 className="text-4xl font-bold text-white mb-2">Enhancement Complete</h2>
+              <p className="text-slate-400">Your video has been successfully processed and optimized.</p>
+            </div>
+
+            <div className="bg-slate-900/40 border border-slate-800 rounded-2xl p-2 pb-0 overflow-hidden shadow-2xl backdrop-blur-md">
+              {/* Split Comparison */}
+              <div className="aspect-video bg-black rounded-xl overflow-hidden relative group" ref={containerRef}>
+                <SplitScreenComparison
+                  originalVideoRef={originalVideoRef}
+                  dehazedVideoRef={dehazedVideoRef}
+                  onPlayPause={handlePlayPause}
+                  onTimeUpdate={handleTimeUpdate}
+                  syncedPlay={syncedPlay}
+                  onSyncToggle={setSyncedPlay}
+                />
+
+                {/* Floating Video Controls */}
+                <div className="absolute opacity-0 group-hover:opacity-100 transition-opacity bottom-6 left-1/2 -translate-x-1/2 bg-slate-900/90 border border-slate-700 px-6 py-2 rounded-full flex items-center gap-4 text-white text-sm backdrop-blur">
+                  <span>Move cursor to compare</span>
+                  <div className="h-4 w-px bg-slate-600"></div>
+                  <span className="font-mono text-cyan-400">
+                    ORIGINAL vs ENHANCED
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid md:grid-cols-3 gap-6 mt-8">
+              <button
+                onClick={handleDownload}
+                className="flex flex-col items-center justify-center p-6 bg-gradient-to-br from-green-600 to-emerald-600 rounded-xl text-white hover:scale-[1.02] transition-transform shadow-lg group"
+              >
+                <Download className="w-8 h-8 mb-2 group-hover:animate-bounce" />
+                <span className="font-bold text-lg">Download Result</span>
+                <span className="text-xs opacity-70 mt-1">MP4 Format • High Quality</span>
+              </button>
+
+              <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6 flex flex-col justify-center">
+                <div className="text-center">
+                  <p className="text-slate-400 text-sm uppercase font-bold mb-1">Processing Time</p>
+                  <p className="text-2xl font-mono text-white">{status.statistics?.total_time_seconds}s</p>
+                  <p className="text-xs text-slate-500 mt-2">Avg Speed: {status.statistics?.average_fps.toFixed(1)} FPS</p>
+                </div>
+              </div>
+
+              <button
+                onClick={handleReset}
+                className="flex flex-col items-center justify-center p-6 bg-slate-800 border border-slate-700 rounded-xl text-slate-300 hover:bg-slate-700 hover:text-white transition-colors group"
+              >
+                <Trash2 className="w-8 h-8 mb-2 group-hover:text-red-400 transition-colors" />
+                <span className="font-bold text-lg">Start New Project</span>
+              </button>
+            </div>
+          </div>
+        )}
+
       </main>
 
-      {/* Footer */}
-      <footer className="relative bg-gradient-to-r from-slate-950 via-slate-900 to-slate-950 backdrop-blur-xl border-t-2 border-purple-500/30 mt-20">
-        <div className="container mx-auto px-6 py-10 text-center">
-          <div className="flex items-center justify-center gap-3 mb-4">
-            <Sparkles className="w-6 h-6 text-purple-400" />
-            <p className="text-purple-300 font-black text-lg">
-              Video Dehazing using Deep Learning
-            </p>
+      {/* Floating Help Button */}
+      <button
+        className="fixed bottom-6 right-6 w-12 h-12 bg-slate-900 hover:bg-cyan-600 text-cyan-400 hover:text-white rounded-full shadow-lg border border-cyan-500/30 flex items-center justify-center transition-all z-40"
+        title="Help & Support"
+        onClick={() => setShowHelp(true)}
+      >
+        <HelpCircle className="w-6 h-6" />
+      </button>
+
+      {/* Help Modal */}
+      {showHelp && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-[fadeIn_0.2s_ease-out]" onClick={() => setShowHelp(false)}>
+          <div className="bg-slate-900 border border-slate-700 p-8 rounded-2xl max-w-lg shadow-2xl relative" onClick={e => e.stopPropagation()}>
+            <h2 className="text-2xl font-bold text-white mb-6">How to use VideoDehaze AI</h2>
+            <div className="space-y-6">
+              {[
+                { step: 1, title: 'Upload', desc: 'Drag & drop any hazy video file (MP4, AVI, MKV).' },
+                { step: 2, title: 'Configure', desc: 'Select AI model depth (8 or 16 layers) and target resolution.' },
+                { step: 3, title: 'Process', desc: 'Watch real-time GPU enhancement as our AI cleans your footage.' },
+                { step: 4, title: 'Download', desc: 'Compare results side-by-side and download the HD output.' },
+              ].map((s) => (
+                <div key={s.step} className="flex gap-4">
+                  <div className="w-8 h-8 rounded-full bg-cyan-500/20 text-cyan-400 flex items-center justify-center font-bold shrink-0 border border-cyan-500/30">
+                    {s.step}
+                  </div>
+                  <div>
+                    <h3 className="text-white font-semibold">{s.title}</h3>
+                    <p className="text-slate-400 text-sm">{s.desc}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <button
+              onClick={() => setShowHelp(false)}
+              className="mt-8 w-full py-3 bg-slate-800 hover:bg-slate-700 text-white rounded-lg font-medium transition-colors"
+            >
+              Start Dehazing
+            </button>
           </div>
-          <p className="text-purple-400/80 text-base font-semibold">
-            Powered by PyTorch, FastAPI & React
-          </p>
-          <p className="text-purple-500/60 text-sm mt-5 font-medium">
-            © 2025 Final Year Engineering Project • All Rights Reserved
-          </p>
         </div>
-      </footer>
+      )}
+
     </div>
   );
 }
