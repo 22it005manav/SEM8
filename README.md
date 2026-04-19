@@ -2,29 +2,29 @@
 
 **A production-ready deep learning system for removing haze and fog from video and image content using advanced CNN architectures, with GPU acceleration and modern web interface.**
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![PyTorch 2.2+](https://img.shields.io/badge/pytorch-2.2+-red.svg)](https://pytorch.org/)
-[![CUDA 11.8](https://img.shields.io/badge/cuda-11.8+-green.svg)](https://developer.nvidia.com/cuda-toolkit)
-[![FastAPI](https://img.shields.io/badge/fastapi-0.115+-emerald.svg)](https://fastapi.tiangolo.com/)
-[![React](https://img.shields.io/badge/react-18+-blue.svg)](https://react.dev/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![PyTorch 2.2.2](https://img.shields.io/badge/pytorch-2.2.2-red.svg)](https://pytorch.org/)
+[![CUDA 11.8](https://img.shields.io/badge/cuda-11.8-green.svg)](https://developer.nvidia.com/cuda-toolkit)
+[![FastAPI 0.115.6](https://img.shields.io/badge/fastapi-0.115.6-emerald.svg)](https://fastapi.tiangolo.com/)
+[![React 18+](https://img.shields.io/badge/react-18%2B-blue.svg)](https://react.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
 
 ## 📋 Table of Contents
 
-- [Overview](#overview)
-- [Key Features](#key-features)
-- [System Architecture](#system-architecture)
-- [Prerequisites](#prerequisites)
-- [Installation](#installation)
-- [Quick Start](#quick-start)
-- [Project Structure](#project-structure)
-- [Usage Guide](#usage-guide)
-- [API Documentation](#api-documentation)
-- [Performance Metrics](#performance-metrics)
-- [Troubleshooting](#troubleshooting)
-- [License](#license)
+- [Overview](#-overview)
+- [Key Features](#-key-features)
+- [System Requirements](#-system-requirements)
+- [Tech Stack](#-complete-tech-stack)
+- [Installation](#-installation)
+- [Quick Start](#-quick-start)
+- [Usage Guide](#-usage-guide)
+- [API Documentation](#-api-documentation)
+- [Model Architecture](#-model-architecture)
+- [Performance Metrics](#-performance-metrics)
+- [Troubleshooting](#-troubleshooting)
+- [License](#-license)
 
 ---
 
@@ -541,147 +541,7 @@ python -m src.inference.video_inference \
 
 ---
 
-## 💻 Installation
-
-### System Requirements
-
-**Minimum:**
-
-- Python 3.10+
-- 8GB RAM
-- 10GB disk space
-
-**Recommended:**
-
-- Python 3.11+
-- 16GB RAM
-- NVIDIA GPU with 6GB+ VRAM (CUDA 11.8+)
-- 20GB disk space
-
-### Prerequisites
-
-1. **Python Installation**
-
-```bash
-# Verify Python version
-python --version  # Should be 3.10+
-```
-
-2. **NVIDIA GPU Setup (Optional but Recommended)**
-
-```bash
-# Check CUDA availability
-nvidia-smi
-
-# Install CUDA Toolkit (https://developer.nvidia.com/cuda-toolkit)
-# Install cuDNN (https://developer.nvidia.com/cudnn)
-```
-
-### Step-by-Step Installation
-
-#### 1. Clone or Navigate to Project
-
-```bash
-cd d:\8\ SEM\ VIDEO\ PROJECT\Real-time-dehazing-deep-learning
-```
-
-#### 2. Create Virtual Environment
-
-```bash
-# Windows
-python -m venv venv
-venv\Scripts\activate
-
-# Linux/Mac
-python3 -m venv venv
-source venv/bin/activate
-```
-
-#### 3. Install Dependencies
-
-```bash
-# CPU Installation
-pip install -r requirements.txt
-
-# GPU Installation (CUDA 11.8)
-pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu118
-```
-
-#### 4. Verify Installation
-
-```bash
-python test_installation.py
-```
-
-Expected output:
-
-```
-✅ PyTorch version: 2.2.2
-✅ CUDA available: True/False
-✅ OpenCV version: 4.10.0.84
-✅ All dependencies installed successfully!
-```
-
-#### 5. Verify Model Weights
-
-```bash
-python check_model_weights.py
-```
-
-Expected output:
-
-```
-✅ Found dehazenet_8layers_best.pth
-✅ Found dehazenet_16layers_best.pth
-✅ Model weights ready for inference
-```
-
----
-
-## 🚀 Quick Start
-
-### Option 1: Simple Web Interface (Recommended for First-Time Users)
-
-```bash
-python app.py
-```
-
-Then open: **http://localhost:8000**
-
-### Option 2: Web App (Development Mode)
-
-**Terminal 1 - Backend:**
-
-```bash
-cd web-app/backend
-python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-**Terminal 2 - Frontend:**
-
-```bash
-cd web-app/frontend
-npm install
-npm run dev
-```
-
-Then open: **http://localhost:5173**
-
-### Option 3: Command Line (CLI)
-
-```bash
-python -m src.inference.video_inference \
-  --input_video "path/to/video.mp4" \
-  --output_video "outputs/deha_result.mp4" \
-  --weights "models/pretrained/dehazenet_8layers_best.pth" \
-  --layers 8 \
-  --device cuda \
-  --no_preview
-```
-
----
-
-## 📖 Usage Guide
+## Usage Guide
 
 ### Web Interface (Recommended for Beginners)
 
