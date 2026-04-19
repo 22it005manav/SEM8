@@ -375,7 +375,12 @@ class ModelService:
     ) -> torch.Tensor:
         """Preprocess a single frame for inference"""
         
-        frame_resized = cv2.resize(frame, target_size)
+        # Skip resizing if frame is already the target size
+        if frame.shape[0] != target_size[1] or frame.shape[1] != target_size[0]:
+            frame_resized = cv2.resize(frame, target_size)
+        else:
+            frame_resized = frame
+        
         frame_rgb = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB)
         frame_normalized = frame_rgb.astype(np.float32) / 255.0
         tensor = torch.from_numpy(frame_normalized).permute(2, 0, 1).unsqueeze(0)
@@ -567,7 +572,7 @@ class VideoProcessor:
                 infer_start = time.time()
                 dehazed_frame = model_service.infer_frame(
                     model=model,
-                    frame=frame,
+                    frame=frame_resized,
                     target_size=(resolution, resolution),
                     device=device,
                     use_fp16=use_fp16
